@@ -790,7 +790,7 @@ This repo does **not** require a frontend for MVP.
  - `agent_kernel_server`
 - [ ] Add kernelspec install command
 - [ ] Add Jupyter Server extension discovery hooks
-- [ ] Add CI for Python 3.11 and 3.12
+- [ ] Add CI for Python 3.13 and 3.14
 
 Tests to write:
 - [ ] import smoke test
