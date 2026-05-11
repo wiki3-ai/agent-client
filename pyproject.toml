@@ -51,6 +51,9 @@ dev = [
 [project.scripts]
 agent-kernel = "agent_kernel.cli:main"
 
+[project.entry-points."jupyter_serverproc_extensions"]
+agent_kernel_server = "agent_kernel_server"
+
 [project.entry-points."jupyter_serverproc.extensions"]
 agent_kernel_server = "agent_kernel_server"
 

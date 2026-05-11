@@ -40,4 +40,6 @@ def test_jupyter_server_extension_discovery() -> None:
     import agent_kernel_server
 
     points = agent_kernel_server._jupyter_server_extension_points()
-    assert points == [{"module": "agent_kernel_server"}]
+    assert len(points) == 1
+    assert points[0]["module"] == "agent_kernel_server"
+    assert "app" in points[0]  # ExtensionApp class reference

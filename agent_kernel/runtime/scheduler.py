@@ -195,18 +195,54 @@ class Scheduler:
     # ----------------------------------------------------------- run helpers
 
     async def _default_run_fn(self, task: TaskSpec) -> RunResult:
-        """Run the task's notebook on a thread to avoid blocking the loop."""
+        """Run the task's notebook on a worker thread with a clean event-loop
+        context.
+
+        ``asyncio.to_thread`` inherits contextvars from the calling task,
+        including ``jupyter_core.utils._loop`` (set to Tornado's running
+        loop when this scheduler is driven from a Jupyter Server handler).
+        That causes ``nbclient.execute()`` to dispatch onto the wrong loop
+        and silently abandon its ``async_execute`` coroutine. We isolate
+        the work in a dedicated thread with a fresh event loop instead.
+        """
         runner = NotebookRunner(self.events, self.workspace.runs_dir)
+        result_holder: dict[str, RunResult | BaseException | None] = {"r": None}
 
-        def _run_sync() -> RunResult:
-            return runner.run(
-                task.notebook_path,
-                task_id=task.task_id,
-                kernel_name=task.kernel_name,
-                timeout=max(1, task.reserved_budget.wall_ms // 1000) or 60,
-            )
+        def _run_in_isolated_thread() -> None:
+            # Brand-new loop; do NOT inherit any contextvar state.
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                try:
+                    from jupyter_core.utils import _loop as _jc_loop
 
-        return await asyncio.to_thread(_run_sync)
+                    _jc_loop.set(loop)
+                except Exception:
+                    pass
+                result_holder["r"] = runner.run(
+                    task.notebook_path,
+                    task_id=task.task_id,
+                    kernel_name=task.kernel_name,
+                    timeout=max(1, task.reserved_budget.wall_ms // 1000) or 60,
+                )
+            except BaseException as exc:
+                result_holder["r"] = exc
+            finally:
+                loop.close()
+
+        import threading
+
+        t = threading.Thread(target=_run_in_isolated_thread, daemon=True)
+        t.start()
+        # Await the thread without blocking the loop.
+        while t.is_alive():
+            await asyncio.sleep(0.05)
+        t.join()
+        r = result_holder["r"]
+        if isinstance(r, BaseException):
+            raise r
+        assert r is not None
+        return r
 
     # ----------------------------------------------------- terminal transitions
 

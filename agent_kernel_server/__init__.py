@@ -1,15 +1,27 @@
-"""agent_kernel_server: Jupyter Server extension for agent-kernel.
-
-Implemented in Milestone 8. This module currently exposes the
-extension-discovery entry points only.
-"""
+"""agent_kernel_server: Jupyter Server extension for agent-kernel."""
 
 __version__ = "0.0.1"
 
 
 def _jupyter_server_extension_points() -> list[dict]:
-    """Return the Jupyter Server extension entry point.
+    """Jupyter Server extension discovery hook."""
+    # Import lazily inside the function so static analyzers / loaders
+    # don't import the heavy ExtensionApp at package-import time.
+    from agent_kernel_server.app import AgentKernelExtension
 
-    Stubbed for M0; the actual ``ExtensionApp`` is implemented in M8.
-    """
-    return [{"module": "agent_kernel_server"}]
+    return [{"module": "agent_kernel_server", "app": AgentKernelExtension}]
+
+
+def _load_jupyter_server_extension(server_app: object) -> None:
+    """Legacy load hook (calls into ExtensionApp)."""
+    from agent_kernel_server.app import AgentKernelExtension
+
+    ext = AgentKernelExtension()
+    ext._link_jupyter_server_extension(server_app)  # type: ignore[attr-defined]
+    ext.initialize()
+
+
+# Re-export
+from agent_kernel_server.app import AgentKernelExtension  # noqa: E402
+
+__all__ = ["AgentKernelExtension", "__version__"]
