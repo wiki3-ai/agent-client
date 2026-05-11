@@ -32,6 +32,12 @@ pytest -m integration             # integration only
 pytest -m "integration and llm"   # requires LM Studio at http://localhost:1234/v1
 ```
 
+## Getting started
+
+See [`docs/getting-started.md`](./docs/getting-started.md) for the
+narrative walkthrough and [`examples/`](./examples/) for runnable
+notebooks.
+
 ## Project structure
 
 See [`agent-client-spec.md`](./agent-client-spec.md) for the full design spec.
