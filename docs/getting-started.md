@@ -21,7 +21,7 @@ Milestone 9.
 | Create / queue / run tasks programmatically | `AgentKernel(...).create_task(...)` / `.run_task(...)` | `agent_kernel.api` |
 | Spawn child tasks from a parent with budget reservation and lineage | `AgentKernel(...).spawn_child_task(...)` | `agent_kernel.runtime.spawn_manager` |
 | Drive tasks from a notebook with `%agent` magics | `%agent task new …`, `%agent run …`, `%agent spawn …`, `%agent ledger tail` | `agent_kernel.kernel`, `agent_kernel.magics` |
-| Structured LLM calls validated to Pydantic, with budget debit + provenance | `StructuredLLM(provider, agent_kernel=ak).generate(...)` | `agent_kernel.llm` |
+| Structured LLM calls validated to Pydantic, with budget debit + provenance, routed through **LiteLLM** (`mock_response` for `FakeProvider`, `lm_studio/<model>` with auto model detection for `LMStudioProvider`, any LiteLLM-supported provider via `LiteLLMProvider`) | `StructuredLLM(provider, agent_kernel=ak).generate(...)` | `agent_kernel.llm` |
 | Append-only JSONL ledger + atomic JSON state snapshots | every event flows through `JSONLEventStore`; state in `<ws>/.agent_kernel/tasks/*.json` | `agent_kernel.storage` |
 | HTTP surface over the same API | `agent_kernel_server` Jupyter Server extension | `agent_kernel_server.app` |
 
@@ -167,22 +167,52 @@ across success / fail / cancel mixes.
 
 ## Structured LLM calls
 
-`StructuredLLM` accepts any provider that implements the `Provider`
-Protocol. Two ship:
+The LLM stack is **LiteLLM + Pydantic** (Instructor-style retry-on-
+validation is built into `StructuredLLM`). All provider logic — auth,
+transport, exception normalization, cost calculation, mocking — is
+delegated to LiteLLM. The two presets we ship are thin wrappers over
+[`litellm.completion`](https://docs.litellm.ai/docs/completion/):
 
-- **`FakeProvider`** — deterministic, in-process. Used by all hermetic
-  integration tests in CI. You can give it a `script` (list of JSON
-  strings to return in order) or a `handler` callback.
-- **`LMStudioProvider`** — OpenAI-compatible HTTP to a local LM Studio
-  server (default `http://localhost:1234/v1`). `is_reachable()` lets
-  you skip cleanly when LM Studio isn't running.
+- **`FakeProvider`** — scripts LiteLLM's canonical `mock_response`
+  kwarg ([docs](https://docs.litellm.ai/docs/completion/mock_requests)).
+  Each scripted item is either a JSON string (returned as the assistant
+  message) or an `Exception` (raised). No bespoke transport, no
+  hand-rolled wire format. Used by all hermetic integration tests.
+- **`LMStudioProvider`** — routes through LiteLLM's built-in
+  `lm_studio/<model>` provider against a local LM Studio server. By
+  default the model id is **auto-detected** from `{base_url}/models`,
+  so quickstart and testing work with whatever model is currently
+  loaded:
+
+  ```python
+  from agent_kernel.llm import LMStudioProvider, StructuredLLM
+
+  provider = LMStudioProvider()              # default base_url, auto model
+  print(provider.list_models())              # whatever LM Studio has loaded
+  print(provider.resolve_model())            # -> "lm_studio/<first id>"
+
+  llm = StructuredLLM(provider, agent_kernel=ak)   # model=None — provider picks
+  ```
+
+You can also instantiate `LiteLLMProvider` directly for any of the
+[100+ providers LiteLLM supports](https://docs.litellm.ai/docs/providers)
+— OpenAI, Anthropic, Azure, Bedrock, etc.:
+
+```python
+from agent_kernel.llm import LiteLLMProvider, StructuredLLM
+
+provider = LiteLLMProvider(model="openai/gpt-4o-mini")  # uses OPENAI_API_KEY
+llm = StructuredLLM(provider, agent_kernel=ak)
+```
 
 A successful `generate()` emits `llm.call.started` →
 `llm.call.completed` (with `prompt_tokens`, `completion_tokens`,
 `cost_usd_micro`, `attempts`, `budget_before`, `budget_after`) →
-`budget.debited`. Retry-on-validation-error is built in:
-`StructuredLLM(max_retries=2)` will append the validator's complaint to
-the conversation and ask the model to try again.
+`budget.debited`. Cost is computed via `litellm.completion_cost` for
+real providers, so pricing comes from LiteLLM's model-cost map rather
+than from bespoke arithmetic. Retry-on-validation-error is built in:
+`StructuredLLM(max_retries=2)` will append the validator's complaint
+to the conversation and ask the model to try again.
 
 See `examples/05_llm_fake_provider.ipynb` for the full flow.
 

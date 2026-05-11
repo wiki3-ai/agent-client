@@ -6,15 +6,14 @@ Public surface:
   ``response_model`` and returns a parsed instance, with retry-on-validation
   and per-call provenance + budget accounting.
 - ``Provider`` — Protocol every concrete provider implements.
-- ``FakeProvider`` — deterministic in-process provider used by CI
-  integration tests.
-- ``LMStudioProvider`` — OpenAI-compatible HTTP provider that targets a
-  local LM Studio server (``http://localhost:1234/v1`` by default). Used
-  for local development; tests against it are guarded by reachability
-  probes and the ``llm`` pytest marker.
-- ``LiteLLMProvider`` — optional adapter that delegates to ``litellm`` if
-  installed (covers OpenAI, Anthropic, Azure, etc.). Imported lazily so
-  the rest of the package doesn't take a hard dep.
+- ``LiteLLMProvider`` — thin wrapper around :func:`litellm.completion`.
+  All real LLM logic lives in LiteLLM.
+- ``FakeProvider`` — deterministic preset that scripts LiteLLM's
+  canonical ``mock_response`` kwarg
+  (see https://docs.litellm.ai/docs/completion/mock_requests).
+- ``LMStudioProvider`` — preset that routes through LiteLLM's built-in
+  ``lm_studio/<model>`` provider, auto-detecting the loaded model from
+  ``{base_url}/models`` when one isn't given.
 """
 
 from agent_kernel.llm.adapter import (
@@ -23,13 +22,14 @@ from agent_kernel.llm.adapter import (
     Provider,
     StructuredLLM,
 )
-from agent_kernel.llm.providers import FakeProvider, LMStudioProvider
+from agent_kernel.llm.providers import FakeProvider, LiteLLMProvider, LMStudioProvider
 
 __all__ = [
     "FakeProvider",
     "LLMCallError",
     "LLMUsage",
     "LMStudioProvider",
+    "LiteLLMProvider",
     "Provider",
     "StructuredLLM",
 ]
