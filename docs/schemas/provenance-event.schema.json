@@ -1,0 +1,295 @@
+{
+  "$defs": {
+    "Budget": {
+      "additionalProperties": false,
+      "description": "Consumable budget for a task.\n\nAll fields are non-negative integers. ``llm_usd_micro`` is USD * 1e6 to\navoid floating-point accounting drift.",
+      "properties": {
+        "wall_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Wall Ms",
+          "type": "integer"
+        },
+        "cpu_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cpu Ms",
+          "type": "integer"
+        },
+        "llm_usd_micro": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Usd Micro",
+          "type": "integer"
+        },
+        "llm_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Input Tokens",
+          "type": "integer"
+        },
+        "llm_output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Output Tokens",
+          "type": "integer"
+        },
+        "bytes_written": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bytes Written",
+          "type": "integer"
+        },
+        "spawn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Spawn Count",
+          "type": "integer"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "EventStatus": {
+      "enum": [
+        "ok",
+        "error",
+        "denied",
+        "cancelled"
+      ],
+      "title": "EventStatus",
+      "type": "string"
+    },
+    "EventType": {
+      "enum": [
+        "task.created",
+        "task.admitted",
+        "task.spawn.requested",
+        "task.spawned",
+        "notebook.materialized",
+        "notebook.execution.started",
+        "notebook.execution.completed",
+        "cell.execution.started",
+        "cell.execution.completed",
+        "cell.execution.error",
+        "llm.call.started",
+        "llm.call.completed",
+        "artifact.emitted",
+        "budget.debited",
+        "budget.refunded",
+        "quota.blocked",
+        "spawn.denied",
+        "task.completed",
+        "task.failed",
+        "task.cancelled"
+      ],
+      "title": "EventType",
+      "type": "string"
+    },
+    "QuotaSnapshot": {
+      "additionalProperties": false,
+      "description": "Concurrency-slot snapshot at a point in time.",
+      "properties": {
+        "kernel_slots_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Kernel Slots Used",
+          "type": "integer"
+        },
+        "kernel_slots_total": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Kernel Slots Total",
+          "type": "integer"
+        },
+        "running_tasks": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Running Tasks",
+          "type": "integer"
+        },
+        "queued_tasks": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Queued Tasks",
+          "type": "integer"
+        }
+      },
+      "title": "QuotaSnapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One line of the append-only provenance JSONL.",
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    },
+    "event_type": {
+      "$ref": "#/$defs/EventType"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "parent_task_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Task Id"
+    },
+    "notebook_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notebook Path"
+    },
+    "kernel_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Kernel Name"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "cell_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cell Id"
+    },
+    "decision_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision Id"
+    },
+    "budget_before": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "budget_after": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quota_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuotaSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Artifact Ids",
+      "type": "array"
+    },
+    "status": {
+      "$ref": "#/$defs/EventStatus",
+      "default": "ok"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    }
+  },
+  "required": [
+    "event_id",
+    "ts",
+    "event_type",
+    "task_id"
+  ],
+  "title": "ProvenanceEvent",
+  "type": "object"
+}
