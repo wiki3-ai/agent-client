@@ -31,11 +31,14 @@ class AgentControlKernel(IPythonKernel):
         "mimetype": "text/x-python",
         "file_extension": ".py",
     }
-    banner = f"agent-kernel {__version__} — type %agent help"
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._agent: AgentKernel | None = None
+
+    @property
+    def banner(self) -> str:
+        return f"agent-kernel {__version__} — type %agent help"
 
     @property
     def agent(self) -> AgentKernel:
@@ -52,6 +55,7 @@ class AgentControlKernel(IPythonKernel):
         allow_stdin: bool = False,
         *,
         cell_id: str | None = None,
+        cell_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # Process leading agent-magic lines; the rest (if any) falls through
         # to normal Python execution.
