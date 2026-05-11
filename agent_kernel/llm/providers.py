@@ -121,9 +121,7 @@ class LiteLLMProvider:
 
         response = litellm.completion(**kwargs)
         text = response.choices[0].message.content or ""
-        return text, _extract_usage(
-            response, provider_name=self.name, model_for_report=used_model
-        )
+        return text, _extract_usage(response, provider_name=self.name, model_for_report=used_model)
 
 
 @dataclass
@@ -157,9 +155,7 @@ class FakeProvider:
         model: str | None,
     ) -> str | Exception:
         if self.handler is not None:
-            result = self.handler(
-                messages=messages, response_schema=response_schema, model=model
-            )
+            result = self.handler(messages=messages, response_schema=response_schema, model=model)
             if isinstance(result, tuple):
                 return result[0]
             return result
@@ -178,9 +174,7 @@ class FakeProvider:
     ) -> tuple[str, LLMUsage]:
         import litellm
 
-        mock = self._next_mock(
-            messages=messages, response_schema=response_schema, model=model
-        )
+        mock = self._next_mock(messages=messages, response_schema=response_schema, model=model)
 
         # Pass mock straight through to litellm. Per the docs, a string
         # populates the assistant message; an Exception causes litellm
@@ -247,9 +241,7 @@ class LMStudioProvider:
         except ImportError:  # pragma: no cover - openai is a [llm] extra
             return []
         try:
-            client = OpenAI(
-                base_url=self.base_url, api_key=self.api_key, timeout=self.timeout_s
-            )
+            client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout_s)
             return [m.id for m in client.models.list()]
         except Exception:
             return []
@@ -285,22 +277,17 @@ class LMStudioProvider:
         if not used_model.startswith("lm_studio/"):
             used_model = f"lm_studio/{used_model}"
 
-        # Embed the schema in the system message and ask for json_object —
-        # this is the portable LM Studio recipe across the various local
-        # backends LM Studio can host. LiteLLM forwards it verbatim.
-        import json as _json
-
-        system_msg = {
-            "role": "system",
-            "content": (
-                "Respond with strict JSON that matches this JSON Schema: "
-                + _json.dumps(response_schema)
-            ),
-        }
         response = litellm.completion(
             model=used_model,
-            messages=[system_msg, *messages],
-            response_format={"type": "json_object"},
+            messages=messages,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": response_schema,
+                    "strict": True,
+                },
+            },
             api_base=self.base_url,
             api_key=self.api_key,
             timeout=self.timeout_s,
