@@ -69,5 +69,16 @@ def run(notebook: Path, workspace: Path, kernel: str, timeout: int, task_id: str
     )
 
 
+@main.command(help="Install the agent-kernel kernelspec for Jupyter.")
+@click.option("--user", is_flag=True, default=False, help="Install for the current user.")
+@click.option("--prefix", default=None, help="Install under this prefix.")
+@click.option("--name", default="agent-kernel", show_default=True, help="Kernelspec name.")
+def install(user: bool, prefix: str | None, name: str) -> None:
+    from agent_kernel.install import install_kernelspec
+
+    dest = install_kernelspec(name=name, user=user, prefix=prefix)
+    click.echo(f"Installed kernelspec {name!r} -> {dest}")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
