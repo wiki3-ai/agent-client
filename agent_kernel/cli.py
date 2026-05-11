@@ -9,6 +9,9 @@ Subcommands are wired in incrementally per milestone:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import click
 
 from agent_kernel import __version__
@@ -23,6 +26,47 @@ def main() -> None:
 @main.command(help="Print version and exit.")
 def version() -> None:
     click.echo(__version__)
+
+
+@main.command(help="Execute a notebook with provenance emission.")
+@click.argument("notebook", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--workspace",
+    "-w",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path.cwd(),
+    show_default=False,
+    help="Workspace root containing .agent_kernel/ state (defaults to cwd).",
+)
+@click.option("--kernel", "-k", default="python3", show_default=True, help="Jupyter kernel name.")
+@click.option(
+    "--timeout", type=int, default=60, show_default=True, help="Per-cell timeout seconds."
+)
+@click.option(
+    "--task-id",
+    default=None,
+    help="Reuse an existing task id; otherwise a new one is generated.",
+)
+def run(notebook: Path, workspace: Path, kernel: str, timeout: int, task_id: str | None) -> None:
+    """Run a notebook and emit a JSONL provenance trace."""
+    from agent_kernel.runtime.notebook_runner import NotebookRunFailed, NotebookRunner
+    from agent_kernel.storage import JSONLEventStore, WorkspaceLayout
+    from agent_kernel.util import new_id
+
+    ws = WorkspaceLayout(workspace)
+    ws.ensure()
+    events = JSONLEventStore(ws.events_dir, fsync=True)
+    runner = NotebookRunner(events, ws.runs_dir)
+    tid = task_id or new_id("task")
+    try:
+        result = runner.run(notebook, task_id=tid, kernel_name=kernel, timeout=timeout)
+    except NotebookRunFailed as exc:
+        click.echo(f"FAILED run_id={exc.run_id} reason={exc.reason}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"OK task_id={result.task_id} run_id={result.run_id} "
+        f"executed_notebook={result.executed_notebook_path}"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
