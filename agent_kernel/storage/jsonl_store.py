@@ -19,10 +19,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_kernel.models.event import ProvenanceEvent
+from agent_kernel.security.redaction import redact_payload
 
 
 class JSONLEventStore:
-    """Append-only event log with daily file rotation."""
+    """Append-only event log with daily file rotation.
+
+    Every event passes through :func:`agent_kernel.security.redact_payload`
+    immediately before serialization so secrets that leak into payloads
+    (LLM prompts, parameter values, error messages) never reach the
+    durable ledger.
+    """
 
     def __init__(self, events_dir: str | Path, *, fsync: bool = False) -> None:
         self.events_dir = Path(events_dir)
@@ -36,7 +43,11 @@ class JSONLEventStore:
         return self.events_dir / f"{date_prefix}.jsonl"
 
     def append(self, event: ProvenanceEvent) -> None:
-        line = event.model_dump_json(exclude_none=False)
+        # Serialize, redact, re-serialize. The two-step round-trip ensures
+        # we redact the canonical JSON form (catches nested Pydantic models).
+        as_dict = json.loads(event.model_dump_json(exclude_none=False))
+        redacted = redact_payload(as_dict)
+        line = json.dumps(redacted, ensure_ascii=False, separators=(",", ":"))
         path = self._path_for(event.ts)
         with self._lock, open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
