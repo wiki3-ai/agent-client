@@ -22,6 +22,7 @@ from agent_kernel.models.event import ProvenanceEvent
 from agent_kernel.models.policy import DEFAULT_PROFILES, PolicyProfile
 from agent_kernel.models.task import SpawnSpec, TaskSpec
 from agent_kernel.runtime.scheduler import Scheduler
+from agent_kernel.runtime.spawn_manager import SpawnManager, SpawnResult
 from agent_kernel.storage import WorkspaceLayout
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "Budget",
     "PolicyProfile",
     "ProvenanceEvent",
+    "SpawnResult",
     "SpawnSpec",
     "TaskSpec",
     "create_task",
@@ -54,6 +56,7 @@ class AgentKernel:
             else DEFAULT_PROFILES[policy_profile]
         )
         self.scheduler = Scheduler(self.workspace, profile=profile)
+        self.spawn_manager = SpawnManager(self.scheduler)
 
     # --- task lifecycle ---------------------------------------------------
 
@@ -70,8 +73,29 @@ class AgentKernel:
         self.scheduler.cancel(task_id)
 
     def run_task(self, task_id: str) -> TaskSpec:
-        """Synchronous wrapper around ``Scheduler.run_task``."""
-        return asyncio.run(self.scheduler.run_task(task_id))
+        """Synchronous wrapper around ``Scheduler.run_task``.
+
+        Tolerates being called from inside a running event loop (e.g. from a
+        notebook cell in an ipykernel) by dispatching to a worker thread
+        with its own loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.scheduler.run_task(task_id))
+
+        # We're already inside an event loop — run on a side thread.
+        import concurrent.futures
+
+        def _run() -> TaskSpec:
+            return asyncio.run(self.scheduler.run_task(task_id))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_run).result()
+
+    def spawn_child_task(self, parent_task_id: str, spec: SpawnSpec) -> SpawnResult:
+        """Spawn a child task from ``parent_task_id``. Caller must run it."""
+        return self.spawn_manager.spawn(parent_task_id, spec)
 
 
 # --- module-level convenience (M4 spec wording) ----------------------------
