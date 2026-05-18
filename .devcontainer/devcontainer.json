@@ -1,0 +1,40 @@
+{
+	"name": "notebook-agent",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+	"runArgs": [
+		"--add-host=host.docker.internal:host-gateway"
+	],
+	"containerEnv": {
+		// LM Studio runs on the host Mac. From inside the container we reach it
+		// via host.docker.internal (mapped above for Linux/Docker hosts; native
+		// on Docker Desktop for Mac).
+		"NOTEBOOK_AGENT_PROVIDER": "lm_studio",
+		"NOTEBOOK_AGENT_MODEL": "lm_studio/google/gemma-4-31b",
+		"NOTEBOOK_AGENT_BASE_URL": "http://host.docker.internal:1234/v1",
+		// LM Studio ignores the key but litellm/openai client requires one.
+		"OPENAI_API_KEY": "lm-studio",
+		"LM_STUDIO_API_BASE": "http://host.docker.internal:1234/v1",
+		"LM_STUDIO_API_KEY": "lm-studio",
+		"PYTHONUNBUFFERED": "1"
+	},
+	"postCreateCommand": "pip install -e '.[dev,llm,mcp]'",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter",
+				"charliermarsh.ruff"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"python.testing.pytestEnabled": true,
+				"python.testing.pytestArgs": ["tests"]
+			}
+		}
+	},
+	"remoteUser": "vscode"
+}

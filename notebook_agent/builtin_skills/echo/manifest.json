@@ -1,0 +1,22 @@
+{
+  "skill_id": "core.echo",
+  "name": "Echo",
+  "version": "0.1.0",
+  "entrypoint": "skill.ipynb",
+  "description": "Echo skill: returns the input message unchanged. Used for end-to-end testing of the notebook agent pipeline including retrieve, transform, and execute stages.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "message": {"type": "string"}
+    },
+    "required": ["message"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message": {"type": "string"}
+    },
+    "required": ["message"]
+  },
+  "tags": ["core", "echo", "test", "papermill"]
+}
