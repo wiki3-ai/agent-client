@@ -171,7 +171,11 @@ class LiteLLMClient:
         except Exception:
             raw_dict = {}
         try:
-            text = response.choices[0].message.content or ""
+            msg = response.choices[0].message
+            text = msg.content or ""
+            if not text:
+                # Fallback for thinking models that put output in reasoning_content
+                text = getattr(msg, "reasoning_content", None) or ""
         except Exception:
             text = ""
 

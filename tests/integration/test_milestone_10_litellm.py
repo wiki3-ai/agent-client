@@ -19,6 +19,7 @@ import pytest
 
 from notebook_agent.dspy_modules import (
     NotebookRepairer,
+    ParameterExtractor,
     ResultSynthesizer,
     SkillRetriever,
     SkillToNotebookTransformer,
@@ -89,6 +90,16 @@ def test_dspy_stubs_with_fake_llm(tmp_path: Path) -> None:
     # When there is no 'message' field, it falls back to the LLM (FakeProvider).
     assert syn({"value": 7}) == "done."
 
+    # ParameterExtractor: when LLM returns valid JSON it is parsed and returned.
+    extractor = ParameterExtractor(llm=LiteLLMClient(provider="fake", fake_response='{"message": "2026-05-18"}'))
+    echo_skill = skills[0]
+    extracted = extractor("Use the echo skill to say today's date", echo_skill)
+    assert extracted == {"message": "2026-05-18"}
+
+    # ParameterExtractor: invalid/empty LLM response returns empty dict (no crash).
+    extractor_bad = ParameterExtractor(llm=LiteLLMClient(provider="fake", fake_response="not json"))
+    assert extractor_bad("echo something", echo_skill) == {}
+
 
 @pytest.mark.live
 def test_live_lm_studio_completion(tmp_path: Path) -> None:
@@ -97,6 +108,6 @@ def test_live_lm_studio_completion(tmp_path: Path) -> None:
         pytest.skip("NOTEBOOK_AGENT_LIVE_LM not set")
     log = tmp_path / "lm_calls.jsonl"
     client = LiteLLMClient(provider="lm_studio", lm_calls_log=log)
-    resp = client.complete("Say 'pong' and nothing else.", max_tokens=8)
+    resp = client.complete("Say 'pong' and nothing else.", max_tokens=200)
     assert resp.text
     assert log.exists()

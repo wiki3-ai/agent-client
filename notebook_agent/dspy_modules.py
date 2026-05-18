@@ -10,6 +10,7 @@ the FakeProvider for tests).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,3 +93,126 @@ class ResultSynthesizer(_ModuleBase):
             ).text
         except LLMUnavailableError:
             return json.dumps(result_payload, sort_keys=True)
+
+
+class ParameterExtractor(_ModuleBase):
+    """Infer skill parameter values from a natural-language request.
+
+    Given a request string and a :class:`~notebook_agent.skills.Skill`, asks
+    the LLM to produce a JSON object whose keys match the skill's input schema.
+    Returned values are merged with any caller-supplied parameters (caller wins
+    on conflicts).
+
+    If no LLM is configured, or the LLM response cannot be parsed, returns
+    an empty dict so the caller's existing parameters (and notebook defaults)
+    are used unchanged.
+    """
+
+    SYSTEM_PROMPT = (
+        "You are a parameter-extraction assistant. Your ONLY job is to produce "
+        "a JSON object that fills in the named parameters from the user's request. "
+        "Output one JSON object and nothing else: no prose, no markdown, no code fences, "
+        "no explanations. Resolve any dynamic expressions in the request (e.g. "
+        "'today', 'now', 'current date') to concrete string values using the "
+        "current date provided in the user message."
+    )
+
+    def __call__(self, request: str, skill: Skill) -> dict[str, Any]:
+        self.last_error: str | None = None
+        schema = skill.manifest.get("input_schema") or {}
+        props = (schema if isinstance(schema, dict) else {}).get("properties") or {}
+        if not props:
+            return {}
+
+        schema_lines = []
+        for name, spec in props.items():
+            if isinstance(spec, dict):
+                typ = spec.get("type", "any")
+                desc = spec.get("description", "")
+                schema_lines.append(f"  - {name} ({typ}){': ' + desc if desc else ''}")
+            else:
+                schema_lines.append(f"  - {name}")
+
+        from datetime import date
+        today = date.today().isoformat()
+        prompt = (
+            f"Current date: {today}\n\n"
+            f"Request: {request}\n\n"
+            "Parameters to fill:\n" + "\n".join(schema_lines) + "\n\n"
+            "Respond with a single JSON object mapping each parameter name to its value."
+        )
+        try:
+            resp = self._llm().complete(
+                prompt,
+                system=self.SYSTEM_PROMPT,
+                # Thinking models (e.g. Gemma) need substantial headroom: they
+                # stream chain-of-thought into ``content`` before emitting the
+                # final JSON. 256 tokens is not enough.
+                max_tokens=2048,
+            )
+            text = resp.text.strip()
+            # Strip markdown code fences if the model added them anyway.
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+            data = _extract_json_object(text)
+            if isinstance(data, dict):
+                # Keep only declared keys to avoid leaking reasoning artifacts.
+                return {k: v for k, v in data.items() if k in props}
+            return {}
+        except LLMUnavailableError as exc:
+            self.last_error = f"LLM unavailable: {exc!s}"
+        except json.JSONDecodeError as exc:
+            self.last_error = f"could not parse JSON from LLM response: {exc!s}"
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"parameter extraction failed: {type(exc).__name__}: {exc!s}"
+        return {}
+
+
+def _extract_json_object(text: str) -> Any:
+    """Find and parse the *last* balanced ``{...}`` object in ``text``.
+
+    Thinking models often emit several JSON-looking fragments inside their
+    reasoning; the final answer is conventionally the last one. We scan from
+    the right so we pick that, and we balance braces so we never grab a
+    truncated tail.
+    """
+    if not text:
+        raise json.JSONDecodeError("empty response", text, 0)
+    # Quick path: whole string parses.
+    s = text.strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Walk right-to-left looking for a closing brace, then find the matching
+    # opening brace honoring nesting and string literals.
+    for end in range(len(s) - 1, -1, -1):
+        if s[end] != "}":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for start in range(end, -1, -1):
+            ch = s[start]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "}":
+                depth += 1
+            elif ch == "{":
+                depth -= 1
+                if depth == 0:
+                    candidate = s[start : end + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break  # try next closing brace
+        # else: didn't balance, try the next earlier '}'.
+    raise json.JSONDecodeError("no JSON object found", s, 0)

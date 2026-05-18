@@ -81,6 +81,7 @@ def run_command(
     request: str = typer.Argument(..., help="Natural-language task request."),
     budget: Path | None = typer.Option(None, "--budget", "-b", help="Path to a JSON budget file."),
     parameters: Path | None = typer.Option(None, "--params", "-p", help="Path to a JSON parameters file."),
+    param: list[str] | None = typer.Option(None, "--param", help="Individual parameter as KEY=VALUE (repeatable, merges with --params)."),
     runs_root: Path = typer.Option(Path("runs"), "--runs-root", help="Root directory for run outputs."),
     skills_dir: list[Path] | None = typer.Option(None, "--skills-dir", "-s", help="Extra skill directory (repeatable)."),
     title: str | None = typer.Option(None, "--title", help="Override task title."),
@@ -91,6 +92,11 @@ def run_command(
     """Run a task end-to-end."""
     budget_dict = _load_budget(budget)
     params = _load_parameters(parameters)
+    for kv in param or []:
+        if "=" not in kv:
+            raise typer.BadParameter(f"--param must be KEY=VALUE, got {kv!r}")
+        k, _, v = kv.partition("=")
+        params[k.strip()] = v
     llm = _resolve_llm(use_llm, fake_llm_response)
     result = run_task(
         request,
@@ -108,6 +114,11 @@ def run_command(
         console.print(f"[{color}]Status:[/{color}] {result.task.status}")
         console.print(f"[bold]Stage used:[/bold] {result.stage_used}")
         console.print(f"[bold]Directory:[/bold] {result.task.directory}")
+        if result.extras.get("parameter_extractor_error"):
+            console.print(
+                f"[yellow]Warning:[/yellow] parameter inference failed: "
+                f"{result.extras['parameter_extractor_error']}"
+            )
         if result.answer:
             console.print("[bold]Answer:[/bold]")
             console.print(result.answer)

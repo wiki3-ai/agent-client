@@ -179,6 +179,25 @@ def run_task(
         )
 
     # ---------------- Execute ----------------
+    # Infer any missing required parameters from the request when an LLM is
+    # available.  Caller-supplied parameters always take precedence.
+    extractor_error: str | None = None
+    if llm is not None and chosen_skill is not None:
+        from .dspy_modules import ParameterExtractor
+        # Route LM call logs into the task's logs directory if not already set.
+        if llm.lm_calls_log is None:
+            llm.lm_calls_log = task.directory / "logs" / "lm_calls.jsonl"
+        extractor = ParameterExtractor(llm=llm)
+        inferred = extractor(request, chosen_skill)
+        extractor_error = getattr(extractor, "last_error", None)
+        # Merge: inferred fills gaps, caller-supplied wins conflicts.
+        parameters = {**inferred, **parameters}
+        log.append(
+            "parameters_inferred",
+            inferred=inferred,
+            error=extractor_error,
+        )
+
     task.stage_used = decision.chosen
     try:
         exec_result = execute_notebook(
@@ -233,6 +252,7 @@ def run_task(
         answer=answer,
         execution=exec_result,
         error=error,
+        extras={"parameter_extractor_error": extractor_error} if extractor_error else {},
     )
 
 
