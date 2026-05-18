@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utcnow() -> datetime:
     """Return current UTC time with tzinfo set."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def iso_now() -> str:
