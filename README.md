@@ -31,14 +31,30 @@ Python kernel for now.
 ## Install
 
 ```bash
-pip install -e ".[llm,mcp,dev]"
+pip install -e ".[mcp,dev]"
 ```
 
 Optional extras:
 
-- `llm` — LiteLLM client (LM Studio / OpenAI / etc.)
 - `mcp` — MCP server wrapper (used by *other* agents, not by humans)
 - `dev` — pytest + ruff
+
+DSPy and Optuna are **required** runtime dependencies — `notebook-agent` IS a
+[DSPy program](https://dspy.ai/) (`notebook_agent.NotebookAgentProgram`)
+composed of typed `dspy.Signature`s. Every LLM-driven step (plan, skill
+selection, code generation, parameter extraction, repair, synthesis) is a
+`dspy.Predict` call against that program, which means optimizers like
+**MIPROv2** and **GEPA** can compile the agent end-to-end:
+
+```python
+from notebook_agent import (
+    NotebookAgentProgram, optimize_with_mipro, optimize_with_gepa,
+)
+
+base = NotebookAgentProgram()
+compiled = optimize_with_mipro(base, trainset=my_examples, metric=my_metric)
+# `compiled` is a drop-in replacement; pass it to run_task(..., program=compiled).
+```
 
 ## Quickstart
 

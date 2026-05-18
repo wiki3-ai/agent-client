@@ -28,27 +28,23 @@ from .display import (
     show_result,
     show_task,
 )
+from .dspy_lm import build_dspy_lm, configure_dspy, using_client
 from .events import EventLog
+from .litellm_client import LiteLLMClient
 from .magics import load_ipython_extension, unload_ipython_extension
-from .skills import SkillRepository
+from .optimize import optimize_with_gepa, optimize_with_mipro
+from .program import (
+    ChooseSkill,
+    ExtractParameters,
+    GenerateCode,
+    NotebookAgentProgram,
+    PlanTask,
+    RepairNotebook,
+    RouteTask,
+    SynthesizeAnswer,
+)
+from .skills import Skill, SkillRepository
 from .task_graph import Task, TaskGraph, create_root_task
-
-
-def search_skills(query: str, *, skill_dirs: list[str] | None = None, top: int = 10):
-    """Convenience wrapper: search built-in + user-supplied skills for *query*.
-
-    Returns a list of :class:`notebook_agent.skills.SkillSearchResult` objects,
-    sorted by descending score.
-    """
-    from pathlib import Path
-
-    from .skills import DEFAULT_SKILL_DIRS
-    from .transform import builtin_skills_root
-
-    roots: list[Path | str] = [builtin_skills_root(), *DEFAULT_SKILL_DIRS]
-    roots.extend(Path(d) for d in (skill_dirs or []))
-    repo = SkillRepository(roots=roots)
-    return repo.search(query, top_k=top)
 
 
 def root_template_path():
@@ -63,16 +59,29 @@ __all__ = [
     "Budget",
     "BudgetExhaustedError",
     "BudgetTracker",
+    "ChooseSkill",
     "EventLog",
+    "ExtractParameters",
+    "GenerateCode",
+    "LiteLLMClient",
+    "NotebookAgentProgram",
+    "PlanTask",
+    "RepairNotebook",
+    "RouteTask",
+    "Skill",
     "SkillRepository",
+    "SynthesizeAnswer",
     "Task",
     "TaskGraph",
     "__version__",
+    "build_dspy_lm",
+    "configure_dspy",
     "create_root_task",
     "load_ipython_extension",
+    "optimize_with_gepa",
+    "optimize_with_mipro",
     "root_template_path",
     "run_task",
-    "search_skills",
     "show_answer",
     "show_events",
     "show_graph",
@@ -81,4 +90,5 @@ __all__ = [
     "show_result",
     "show_task",
     "unload_ipython_extension",
+    "using_client",
 ]

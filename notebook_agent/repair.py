@@ -17,7 +17,6 @@ import nbformat
 
 from .budget import BudgetTracker
 from .events import EventLog
-from .litellm_client import LiteLLMClient, LLMUnavailableError
 from .notebook_exec import NotebookExecutionResult, execute_notebook
 from .task_graph import Task
 
@@ -137,11 +136,16 @@ def repair_and_rerun(
     *,
     budget: BudgetTracker,
     parameters: dict[str, Any] | None = None,
-    llm: LiteLLMClient | None = None,
+    program: Any | None = None,
 ) -> RepairOutcome:
     """Attempt to repair a failed notebook execution and re-run it.
 
-    The repair is represented as a child task under ``parent_task``.
+    Repairs are deterministic: the diagnosis identifies one of a known set of
+    failure shapes (missing dir, undefined name, missing module, …) and the
+    corresponding patcher edits the notebook. If a ``program`` (a
+    :class:`notebook_agent.program.NotebookAgentProgram`) is supplied and the
+    failure is an ``undefined_name``, the program's ``repairer`` predictor is
+    consulted for a one-line fix.
     """
     diagnosis = diagnose_failure(failed_result)
     parent_log = parent_task.event_log()
@@ -175,11 +179,11 @@ def repair_and_rerun(
 
     strategy = "deterministic"
     patched = _patch_notebook(repaired_nb_path, diagnosis)
-    if not patched and llm is not None:
+    if not patched and program is not None:
         try:
-            patched = _llm_patch_notebook(repaired_nb_path, diagnosis, failed_result, llm)
-            strategy = "llm" if patched else strategy
-        except LLMUnavailableError:
+            patched = _program_patch_notebook(repaired_nb_path, diagnosis, program)
+            strategy = "dspy" if patched else strategy
+        except Exception:  # noqa: BLE001
             patched = False
     if not patched:
         repair_task.update_status("failed")
@@ -244,41 +248,34 @@ def repair_and_rerun(
 # ---------------------------------------------------------------------------
 
 
-def _llm_patch_notebook(
+def _program_patch_notebook(
     notebook_path: Path,
     diagnosis: FailureDiagnosis,
-    failed_result: NotebookExecutionResult,
-    llm: LiteLLMClient,
+    program: Any,
 ) -> bool:
-    """Ask the LLM for a one-line Python statement to prepend that resolves the error.
+    """Ask the DSPy ``repairer`` predictor for a one-line fix.
 
-    Conservative: only applied for the ``undefined_name`` failure class, where
-    the suggested fix is a definition of the missing name. The LLM is expected
-    to return *only* a Python expression like ``x = 0``.
+    Conservative: only applied to ``undefined_name`` failures, where the
+    suggested fix must be a simple assignment to the missing name. Any other
+    shape is refused.
     """
     if diagnosis.kind != "undefined_name":
         return False
     name = diagnosis.payload["name"]
-    prompt = (
-        f"A Jupyter notebook cell failed with NameError: name '{name}' is not defined.\n"
-        f"Provide a single Python statement that defines `{name}` with a reasonable default value.\n"
-        "Respond with only the Python code, no markdown fences."
+    error_text = (
+        f"NameError: name '{name}' is not defined. "
+        f"Provide a single Python statement that defines `{name}` "
+        "with a reasonable default value."
     )
-    if llm.is_fake():
-        # Deterministic default when running under the FakeProvider in tests.
-        code_text = f"{name} = 0"
-    else:
-        resp = llm.complete(prompt, max_tokens=64)
-        code_text = (resp.text or "").strip().strip("`")
-        if not code_text:
-            return False
-        # Refuse anything that isn't a simple assignment to the missing name.
-        if not re.match(rf"^\s*{re.escape(name)}\s*=", code_text):
-            return False
+    fix = (program.repair(error_text) or "").strip().strip("`")
+    if not fix:
+        return False
+    if not re.match(rf"^\s*{re.escape(name)}\s*=", fix):
+        return False
 
     nb = nbformat.read(str(notebook_path), as_version=4)
-    cell = nbformat.v4.new_code_cell(source=f"# notebook-agent llm-repair\n{code_text}\n")
-    cell.metadata["tags"] = ["auto_repair", "llm_repair"]
+    cell = nbformat.v4.new_code_cell(source=f"# notebook-agent dspy-repair\n{fix}\n")
+    cell.metadata["tags"] = ["auto_repair", "dspy_repair"]
     insert_at = 0
     for i, c in enumerate(nb.cells):
         if c.get("cell_type") == "code" and "parameters" in (c.metadata.get("tags") or []):

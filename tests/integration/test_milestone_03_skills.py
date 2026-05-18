@@ -1,4 +1,8 @@
-"""Milestone 3 acceptance test: local skill search/retrieval."""
+"""Skill discovery test.
+
+Selection (which skill handles a given request) is a DSPy step exercised in
+``test_dspy_program.py``; this test covers only on-disk discovery + loading.
+"""
 
 from __future__ import annotations
 
@@ -28,53 +32,31 @@ def _make_skill(root: Path, skill_id: str, name: str, description: str, md: str,
     return d
 
 
-def test_search_ranks_execute_notebook_first(tmp_path: Path) -> None:
+def test_repository_discovers_and_loads_skills(tmp_path: Path) -> None:
     skills_root = tmp_path / "skills" / "core"
     _make_skill(
-        skills_root,
-        "core.execute_notebook",
-        "Execute Notebook",
+        skills_root, "core.execute_notebook", "Execute Notebook",
         "Execute a parameterized Jupyter notebook using Papermill.",
-        "# Execute Notebook\n\nRun papermill on a target notebook with given parameters.",
-        ["core", "papermill", "execution"],
+        "# Execute Notebook\n\nRun papermill on a target notebook.",
+        ["core", "papermill"],
     )
     _make_skill(
-        skills_root,
-        "core.search_local",
-        "Search Local",
-        "Search local files and skills by lexical match.",
-        "# Search Local\n\nLexical local search.",
-        ["core", "search"],
+        skills_root, "core.echo", "Echo",
+        "Echo input.", "# Echo\n\nReturn the input message.", ["core", "echo"],
     )
-    _make_skill(
-        skills_root,
-        "core.summarize_result",
-        "Summarize Result",
-        "Summarize a JSON result into a human answer.",
-        "# Summarize\n\nGenerate a summary.",
-        ["core", "summarize"],
-    )
-
     repo = SkillRepository([tmp_path / "skills"])
-    results = repo.search("run papermill notebook")
-    assert results, "expected at least one match"
-    assert results[0].skill.skill_id == "core.execute_notebook"
-    # Returned result includes manifest metadata and SKILL.md excerpt.
-    top = results[0].to_dict()
-    assert top["skill"]["description"].startswith("Execute")
-    assert "papermill" in top["skill"]["excerpt"].lower()
-    assert "papermill" in top["matched_terms"]
+    ids = {s.skill_id for s in repo.all_skills()}
+    assert ids == {"core.execute_notebook", "core.echo"}
+    # Catalog is the structured form fed to the DSPy chooser.
+    catalog = repo.catalog()
+    assert all({"skill_id", "name", "description", "tags"} <= set(e) for e in catalog)
 
 
 def test_load_individual_skill(tmp_path: Path) -> None:
     skills_root = tmp_path / "skills"
     _make_skill(
-        skills_root / "core",
-        "core.echo",
-        "Echo",
-        "Echo input.",
-        "# Echo\n\nReturn the input message.",
-        ["core", "echo"],
+        skills_root / "core", "core.echo", "Echo",
+        "Echo input.", "# Echo\n\nReturn the input message.", ["core", "echo"],
     )
     repo = SkillRepository([skills_root])
     s = repo.find("core.echo")
@@ -84,9 +66,7 @@ def test_load_individual_skill(tmp_path: Path) -> None:
 
 
 def test_builtin_echo_skill_discoverable() -> None:
-    """The packaged echo skill (§24) should be present and searchable."""
     here = Path(__file__).resolve().parents[2] / "notebook_agent" / "builtin_skills"
     repo = SkillRepository([here])
-    results = repo.search("echo message")
-    assert results
-    assert results[0].skill.skill_id == "core.echo"
+    ids = {s.skill_id for s in repo.all_skills()}
+    assert "core.echo" in ids

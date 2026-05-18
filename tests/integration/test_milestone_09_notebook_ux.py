@@ -1,31 +1,32 @@
-"""Milestone 9 acceptance test: Jupyter-notebook UX + MCP service.
+"""Milestone 9 acceptance: Jupyter-notebook UX + MCP service.
 
-Per the user direction overriding spec §17: the user UX is a Jupyter
-notebook, not a CLI. We exercise that UX two ways:
+The user UX is a Jupyter notebook. We exercise it two ways:
 
-* End-to-end: papermill-execute ``examples/quickstart.ipynb`` and verify it
-  produces a successful task graph (this is exactly what a real user does
-  except their cells render interactively instead of being captured).
-* In-process: call the public package API (``run_task``, ``search_skills``,
-  the ``show_*`` display helpers) the same way a notebook cell would.
+* End-to-end: papermill-execute ``examples/quickstart.ipynb`` with a DSPy
+  ``DummyLM`` configured inside the notebook via env var. This is the same
+  notebook a user would run — the only difference is that headless tests
+  script the DSPy answers instead of relying on a live LM.
+* In-process: call ``run_task`` and the ``show_*`` helpers directly the way
+  a notebook cell would.
 
-The MCP server is *not* part of the user UX — it's how other agents talk to
-this one — but we still verify the FastMCP tool wiring here so milestone 9
-remains covered.
+The MCP server is *not* user UX — it's how other agents talk to this one —
+but we still verify the FastMCP tool wiring.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import dspy  # type: ignore[import-untyped]
 import papermill as pm
 import pytest
+from dspy.utils.dummies import DummyLM  # type: ignore[import-untyped]
 
 from notebook_agent import (
     TaskGraph,
     run_task,
-    search_skills,
     show_answer,
     show_events,
     show_graph,
@@ -36,13 +37,27 @@ from notebook_agent.mcp_server import (
     build_fastmcp,
     tool_execute_notebook,
     tool_get_task_graph,
+    tool_list_skills,
     tool_read_manifest,
     tool_run_task,
-    tool_search_skills,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUICKSTART_NB = REPO_ROOT / "examples" / "quickstart.ipynb"
+
+
+# Scripted DSPy answers for any "Use the echo skill" run:
+#   planner -> plan, chooser -> core.echo, extractor -> {message: ...}
+def _echo_answers(message: str) -> list[dict[str, str]]:
+    return [
+        {"plan": "- echo the message\n- return the result"},
+        {"chosen_skill_id": "core.echo"},
+        {"parameters_json": json.dumps({"message": message})},
+    ]
+
+
+def _configure_dspy(answers: list[dict[str, str]]) -> None:
+    dspy.configure(lm=DummyLM(answers))
 
 
 # ---------------------------------------------------------------------------
@@ -51,25 +66,33 @@ QUICKSTART_NB = REPO_ROOT / "examples" / "quickstart.ipynb"
 
 
 def test_quickstart_notebook_runs_end_to_end(tmp_path: Path) -> None:
-    """Papermill-executing the user-facing quickstart notebook succeeds.
-
-    This is the milestone-9 acceptance criterion: the user's notebook-based
-    UX produces a real task graph end-to-end without any CLI invocation.
-    """
+    """Papermill-executing the user-facing quickstart notebook succeeds."""
     executed = tmp_path / "quickstart.executed.ipynb"
     runs_root = tmp_path / "runs"
-    pm.execute_notebook(
-        str(QUICKSTART_NB),
-        str(executed),
-        parameters={
-            "request": "Use the echo skill to echo from the quickstart notebook",
-            "message": "hello from quickstart",
-            "runs_root": str(runs_root),
-        },
-        cwd=str(tmp_path),
-        kernel_name="python3",
-    )
-    # The notebook created a run directory with a successful manifest.
+    message = "hello from quickstart"
+    env = os.environ.copy()
+    env["NOTEBOOK_AGENT_DSPY_ANSWERS_JSON"] = json.dumps(_echo_answers(message))
+    # papermill kernel inherits the current process env automatically.
+    old = os.environ.get("NOTEBOOK_AGENT_DSPY_ANSWERS_JSON")
+    os.environ["NOTEBOOK_AGENT_DSPY_ANSWERS_JSON"] = env["NOTEBOOK_AGENT_DSPY_ANSWERS_JSON"]
+    try:
+        pm.execute_notebook(
+            str(QUICKSTART_NB),
+            str(executed),
+            parameters={
+                "request": "Use the echo skill to echo from the quickstart notebook",
+                "message": message,
+                "runs_root": str(runs_root),
+            },
+            cwd=str(tmp_path),
+            kernel_name="python3",
+        )
+    finally:
+        if old is None:
+            os.environ.pop("NOTEBOOK_AGENT_DSPY_ANSWERS_JSON", None)
+        else:
+            os.environ["NOTEBOOK_AGENT_DSPY_ANSWERS_JSON"] = old
+
     run_dirs = list(runs_root.rglob("manifest.json"))
     assert run_dirs, f"no manifests under {runs_root}"
     manifests = [json.loads(p.read_text(encoding="utf-8")) for p in run_dirs]
@@ -78,41 +101,39 @@ def test_quickstart_notebook_runs_end_to_end(tmp_path: Path) -> None:
 
 
 def test_notebook_api_round_trip(tmp_path: Path) -> None:
-    """The in-process API a notebook cell would call: run_task + show_*."""
     runs_root = tmp_path / "runs"
+    _configure_dspy(_echo_answers("from-api"))
     result = run_task(
         "Use the echo skill",
         parameters={"message": "from-api"},
         runs_root=runs_root,
     )
     assert result.success, result.error
-    # Display helpers don't raise and return something printable.
     for helper in (show_task, show_answer, show_manifest, show_events, show_graph):
         rendered = helper(result)
         assert rendered is not None
-        # str(...) is the IPython-display object repr; it must not be empty.
         assert str(rendered).strip() != ""
-    # Reloading the graph from disk matches the live task.
     graph = TaskGraph.load(result.task.directory)
     assert graph.root.task_id == result.task.task_id
 
 
-def test_search_skills_finds_echo() -> None:
-    results = search_skills("echo message", top=5)
-    assert results, "expected at least one search hit"
-    assert results[0].skill.skill_id == "core.echo"
+def test_skill_catalog_contains_echo() -> None:
+    catalog = tool_list_skills()
+    ids = {s["skill_id"] for s in catalog["skills"]}
+    assert "core.echo" in ids
 
 
 # ---------------------------------------------------------------------------
-# MCP server (agent-to-agent surface, not user UX)
+# MCP server
 # ---------------------------------------------------------------------------
 
 
 def test_mcp_tool_functions_round_trip(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
-    search = tool_search_skills("echo")
-    assert any(r["skill"]["skill_id"] == "core.echo" for r in search["results"])
+    catalog = tool_list_skills()
+    assert any(s["skill_id"] == "core.echo" for s in catalog["skills"])
 
+    _configure_dspy(_echo_answers("mcp says hi"))
     res = tool_run_task(
         "Use the echo skill",
         parameters={"message": "mcp says hi"},
@@ -150,7 +171,7 @@ def test_mcp_server_registers_required_tools() -> None:
     required = {
         "run_task",
         "run_skill",
-        "search_skills",
+        "list_skills",
         "read_manifest",
         "get_task_graph",
         "execute_notebook",

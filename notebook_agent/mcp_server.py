@@ -1,19 +1,15 @@
 """MCP service wrapper (Section 14.10, Milestone 9).
 
-Exposes notebook-agent capabilities as MCP tools. The server uses the official
-``mcp`` Python SDK's :class:`FastMCP` for the simplest possible registration.
+Exposes notebook-agent capabilities as MCP tools.
 
-Available tools (per spec §14.10):
+Available tools:
 
-* ``run_task`` — run a full agent task end-to-end;
+* ``run_task`` — run a full agent task end-to-end via the DSPy program;
 * ``run_skill`` — transform a known skill and execute it directly;
-* ``search_skills`` — lexical search across built-in + project skills;
+* ``list_skills`` — list built-in + project skill catalog entries;
 * ``read_manifest`` — read a task manifest by directory;
 * ``get_task_graph`` — render a task graph (parent + children) as JSON;
 * ``execute_notebook`` — execute a parameterized notebook.
-
-The module avoids importing :mod:`mcp` at top level so that the rest of the
-package keeps working without the optional ``mcp`` extra installed.
 """
 
 from __future__ import annotations
@@ -26,20 +22,23 @@ from .agent import run_task as _run_task
 from .notebook_exec import execute_notebook as _execute_notebook
 from .skills import SkillRepository
 from .task_graph import TaskGraph
-from .transform import builtin_skills_root, transform_skill_to_notebook
+from .transform import builtin_skills_root
 
 # ---------------------------------------------------------------------------
 # Tool implementations as plain functions (also reused by the test suite)
 # ---------------------------------------------------------------------------
 
 
-def tool_search_skills(query: str, skill_dirs: list[str] | None = None, top: int = 10) -> dict[str, Any]:
+def tool_list_skills(skill_dirs: list[str] | None = None) -> dict[str, Any]:
+    """Return the catalog of available skills (no scoring).
+
+    Selection over this catalog is a DSPy step inside ``run_task``.
+    """
     roots: list[Path | str] = [builtin_skills_root()]
     if skill_dirs:
         roots.extend(skill_dirs)
     repo = SkillRepository(roots)
-    results = repo.search(query, top_k=top)
-    return {"query": query, "results": [r.to_dict() for r in results]}
+    return {"skills": repo.catalog()}
 
 
 def tool_read_manifest(directory: str) -> dict[str, Any]:
@@ -131,9 +130,9 @@ def build_fastmcp(*, runs_root: Path | str = "runs", skill_dirs: list[Path | str
     runs_root_str = str(runs_root)
 
     @server.tool()
-    def search_skills(query: str, top: int = 10) -> dict[str, Any]:
-        """Search skills by lexical query. Returns ranked results with manifest excerpts."""
-        return tool_search_skills(query, skill_dirs=skill_dirs_str, top=top)
+    def list_skills() -> dict[str, Any]:
+        """List the catalog of available skills."""
+        return tool_list_skills(skill_dirs=skill_dirs_str)
 
     @server.tool()
     def read_manifest(directory: str) -> dict[str, Any]:
@@ -180,10 +179,6 @@ def build_fastmcp(*, runs_root: Path | str = "runs", skill_dirs: list[Path | str
         """Execute a parameterized notebook with Papermill."""
         return tool_execute_notebook(notebook, parameters=parameters, output=output, run_dir=run_dir)
 
-    # Reference the transformer so MCP clients can discover its existence via
-    # introspection even though it is currently consumed internally by
-    # ``run_task``.
-    _ = transform_skill_to_notebook
     return server
 
 

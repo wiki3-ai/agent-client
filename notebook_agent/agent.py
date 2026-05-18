@@ -1,60 +1,38 @@
-"""End-to-end agent orchestration (Section 14.9, MVP per ``nb-agent.md``).
+"""End-to-end agent orchestration (DSPy program drives every LLM step).
 
-This is the **only** entry point a notebook user is expected to touch::
+This module is the only place that knows about the lifecycle of a notebook
+task: filesystem layout, plan persistence, skill catalog assembly, the
+:class:`~notebook_agent.program.NotebookAgentProgram` invocation, Papermill
+execution, and the canonical state written back into the executed notebook.
 
-    from notebook_agent import run_task
-    result = run_task("Count the words in 'hello from the graph notebook agent'")
-
-``run_task`` builds an LLM client from environment defaults (LM Studio
-compatible via LiteLLM), drafts a short visible plan/TODO list, searches the
-local skill repository, and — if no skill matches strongly — asks the LLM to
-write a Python snippet and executes it as a generated notebook with Papermill.
-The executed notebook is the canonical task record: machine-readable state is
-stored in ``nb.metadata["notebook_agent"]`` and visible cells carry the human
-narrative.
-
-The function also supports continuation: pass ``continue_from=<prior result>``
-together with a feedback prompt ("continue", "that result is wrong, try again",
-new instructions) and the agent resumes from the prior notebook state instead
-of starting over.
-
-Backwards compatibility
------------------------
-The MVP keeps writing ``task.json``, ``manifest.json``, ``README.md``,
-``outputs/result.json``, ``outputs/answer.md`` and ``logs/events.jsonl`` to the
-task directory so the existing milestone-1..9 tests, MCP tools, and display
-helpers keep working. The notebook is now the authoritative record — sidecar
-files are a derivative cache populated from it.
+Every LLM-driven decision goes through DSPy. There is **no** fallback path
+that hand-rolls prompts and calls a completion API directly: if the LM is
+unreachable, the task fails with a clear error.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+import dspy  # type: ignore[import-untyped]
 import nbformat
 
 from ._clock import iso_now
 from .budget import Budget, BudgetExhaustedError, BudgetTracker
-from .codegen import (
-    GeneratedCode,
-    build_generated_notebook,
-    generate_code_for_request,
-)
-from .litellm_client import LiteLLMClient, LLMUnavailableError
+from .codegen import GeneratedCode, build_generated_notebook, validate_snippet
+from .dspy_lm import configure_dspy
+from .litellm_client import LiteLLMClient
 from .notebook_exec import NotebookExecutionResult, execute_notebook
-from .planner import StageDecision, TodoItem, decompose_request
+from .planner import StageDecision, decompose_request
+from .program import NotebookAgentProgram, split_plan
 from .repair import repair_and_rerun
 from .skills import Skill, SkillRepository
 from .task_graph import Task, create_root_task
 from .transform import builtin_skills_root, transform_skill_to_notebook
-
-# Skill-match score floor. Below this we fall through to the Generate stage
-# rather than forcing the prompt onto a weakly-matching skill (which is what
-# made the agent appear to do nothing but echo).
-_SKILL_MATCH_THRESHOLD = 3.0
 
 
 @dataclass
@@ -103,36 +81,32 @@ def _skill_repository(extra_skill_dirs: list[Path | str] | None) -> SkillReposit
     return SkillRepository(roots)
 
 
-def _default_llm(task: Task | None = None) -> LiteLLMClient:
-    """Build a default LiteLLM client from env vars (LM Studio compatible).
+def _ensure_dspy_configured(client: LiteLLMClient | None) -> Any:
+    """Make sure ``dspy.settings.lm`` is set; return the active LM.
 
-    The client is created lazily; no network call is made here. If the user
-    has not set ``NOTEBOOK_AGENT_PROVIDER`` we default to ``"lm_studio"`` —
-    which uses ``NOTEBOOK_AGENT_BASE_URL`` / ``DEFAULT_BASE_URL``.
+    If the caller has already configured DSPy (e.g. at the top of their
+    notebook), we respect that. Otherwise we configure from ``client`` or
+    from env-driven defaults.
     """
-    log = task.lm_calls_log if task is not None else None
-    return LiteLLMClient(lm_calls_log=log)
+    lm = getattr(dspy.settings, "lm", None)
+    if lm is not None and client is None:
+        return lm
+    return configure_dspy(client or LiteLLMClient())
 
 
 def _looks_like_continuation(prompt: str) -> bool:
     s = (prompt or "").strip().lower()
     triggers = (
-        "continue",
-        "keep going",
-        "try again",
-        "not satisfactory",
-        "that's wrong",
-        "thats wrong",
-        "wrong",
-        "fix it",
-        "again",
-        "more",
+        "continue", "keep going", "try again", "not satisfactory",
+        "that's wrong", "thats wrong", "wrong", "fix it", "again", "more",
     )
     return any(t in s for t in triggers)
 
 
-def _todo_to_plan(items: list[TodoItem]) -> list[str]:
-    return [it.title for it in items]
+def _resolve_skill(repo: SkillRepository, chosen_id: str) -> Skill | None:
+    if not chosen_id or chosen_id.strip().lower() in {"none", "null", "n/a", ""}:
+        return None
+    return repo.find(chosen_id.strip())
 
 
 def _summarize(stage: str, skill: Skill | None, payload: dict[str, Any] | None, err: dict[str, Any] | None) -> str:
@@ -152,10 +126,7 @@ def _summarize(stage: str, skill: Skill | None, payload: dict[str, Any] | None, 
 
 
 def _write_notebook_state(nb_path: Path, state: dict[str, Any]) -> None:
-    """Merge *state* into the executed notebook's metadata under ``notebook_agent``.
-
-    This is the canonical persistence channel per ``nb-agent.md``.
-    """
+    """Merge *state* into the executed notebook's metadata under ``notebook_agent``."""
     if not nb_path.exists():
         return
     try:
@@ -176,8 +147,74 @@ def _read_notebook_state(nb_path: Path) -> dict[str, Any]:
         nb = nbformat.read(str(nb_path), as_version=4)
     except Exception:
         return {}
-    md = nb.metadata.get("notebook_agent") or {}
-    return dict(md)
+    return dict(nb.metadata.get("notebook_agent") or {})
+
+
+def _schema_text(skill: Skill) -> str:
+    schema = skill.manifest.get("input_schema") or {}
+    props = (schema if isinstance(schema, dict) else {}).get("properties") or {}
+    if not props:
+        return ""
+    lines: list[str] = []
+    for name, spec in props.items():
+        if isinstance(spec, dict):
+            typ = spec.get("type", "any")
+            desc = spec.get("description", "")
+            lines.append(f"- {name} ({typ}){': ' + desc if desc else ''}")
+        else:
+            lines.append(f"- {name}")
+    return "\n".join(lines)
+
+
+def _parse_extracted_params(text: str, schema_props: dict[str, Any]) -> dict[str, Any]:
+    """Parse the JSON object produced by ``ExtractParameters``; keep declared keys only."""
+    s = (text or "").strip()
+    # Strip markdown fences if any thinking-model leaks them in.
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError:
+        # Fall back to last balanced { ... }.
+        data = _last_balanced_object(s)
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k in schema_props}
+
+
+def _last_balanced_object(text: str) -> Any:
+    if not text:
+        return None
+    for end in range(len(text) - 1, -1, -1):
+        if text[end] != "}":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for start in range(end, -1, -1):
+            ch = text[start]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "}":
+                depth += 1
+            elif ch == "{":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : end + 1])
+                    except json.JSONDecodeError:
+                        break
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -194,49 +231,22 @@ def run_task(
     title: str | None = None,
     skill_dirs: list[Path | str] | None = None,
     llm: LiteLLMClient | None = None,
+    program: NotebookAgentProgram | None = None,
     auto_repair: bool = True,
     continue_from: AgentResult | Task | str | Path | None = None,
     max_autonomous_turns: int = 6,
 ) -> AgentResult:
-    """Run a task end-to-end. The only required argument is ``request``.
+    """Run a task end-to-end via the DSPy :class:`NotebookAgentProgram`.
 
-    Parameters
-    ----------
-    request:
-        The user's prompt. Everything else is optional.
-    runs_root:
-        Where to create the per-run directory.
-    parameters:
-        Optional skill input overrides. The agent infers parameters from the
-        prompt when an LLM is available; explicit values take precedence.
-    budget:
-        Optional :class:`Budget`. Only ``max_autonomous_turns`` is enforced
-        as a hard loop limit per the MVP spec; the rest are tracked for
-        observability and can be set by power users.
-    title:
-        Optional human title (defaults to the first line of *request*).
-    skill_dirs:
-        Extra skill directories to scan in addition to the built-ins and
-        ``./skills``.
-    llm:
-        Optional pre-built :class:`LiteLLMClient`. If omitted, a default
-        client is built from environment defaults (LM Studio compatible).
-        The notebook user never needs to supply this.
-    auto_repair:
-        If True, failed notebook executions are passed through the
-        deterministic repair loop.
-    continue_from:
-        An :class:`AgentResult`, :class:`Task`, task directory path, or
-        directory string. When present, the new request is treated as a
-        continuation of that prior task (feedback, "continue", corrections).
-    max_autonomous_turns:
-        Maximum number of autonomous LLM-driven turns the agent may take
-        before reporting back. Per ``nb-agent.md`` this is the only
-        user-facing budget knob. Defaults to 6.
+    Required: ``request``. Everything else is optional.
+
+    The agent assumes DSPy is configured (``dspy.configure(lm=...)``); if no
+    LM is configured we build one from ``llm`` or from
+    ``NOTEBOOK_AGENT_*`` env vars. ``program`` may be supplied to use a
+    pre-compiled program (e.g. one returned by ``optimize_with_mipro``).
     """
     parameters = dict(parameters or {})
 
-    # ---------- Budget: turn-based first, the rest passthrough ----------
     if isinstance(budget, dict):
         bdict = dict(budget)
     elif budget is None:
@@ -246,7 +256,6 @@ def run_task(
     bdict.setdefault("max_autonomous_turns", max_autonomous_turns)
     budget_obj = Budget.from_dict(bdict)
 
-    # ---------- Continuation ----------
     parent_task: Task | None = None
     prior_state: dict[str, Any] = {}
     if continue_from is not None:
@@ -269,54 +278,67 @@ def run_task(
     tracker = BudgetTracker(task.budget)
     decision = StageDecision()
     repo = _skill_repository(skill_dirs)
-    started_at = iso_now()
 
     manifest = task.read_manifest()
-    manifest["started_at"] = started_at
+    manifest["started_at"] = iso_now()
     manifest["continued_from"] = str(parent_task.directory) if parent_task else None
 
-    # Auto-build an LLM client when caller didn't supply one. This is the key
-    # zero-config UX change: a notebook user just calls run_task(prompt).
-    if llm is None:
-        llm = _default_llm(task)
-    elif llm.lm_calls_log is None:
-        llm.lm_calls_log = task.lm_calls_log
+    # ----- Configure DSPy + build the program. -----
+    _ensure_dspy_configured(llm)
+    if program is None:
+        program = NotebookAgentProgram()
 
-    # ---------- Plan / TODO ----------
-    todo_items = decompose_request(request)
-    plan = _todo_to_plan(todo_items)
+    # ----- Plan (DSPy planner). -----
+    if not tracker.can_spend("autonomous_turns", 1):
+        error = {"type": "BudgetExhaustedError", "message": "no turns available for planning",
+                 "resource": "autonomous_turns"}
+        _finalize(task, manifest, decision, tracker, success=False, error=error, log=log, plan=[])
+        return AgentResult(task=task, success=False, stage_used=None,
+                           manifest=task.read_manifest(), result_payload=None,
+                           answer=_summarize("plan", None, None, error),
+                           error=error, plan=[], turns_used=0)
+    tracker.spend("autonomous_turns", 1)
+    try:
+        plan = program.plan(request)
+    except Exception as exc:  # noqa: BLE001
+        err = {"type": type(exc).__name__, "message": str(exc)}
+        _finalize(task, manifest, decision, tracker, success=False, error=err, log=log, plan=[])
+        return AgentResult(task=task, success=False, stage_used=None,
+                           manifest=task.read_manifest(), result_payload=None,
+                           answer=_summarize("plan", None, None, err), error=err, plan=[],
+                           turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]))
+    # Continuation: extend the prior plan instead of replacing it.
     if prior_state.get("plan"):
-        # Continuation: keep the original plan and append a follow-up step.
         plan = list(prior_state["plan"]) + [f"Address user feedback: {request.strip()[:60]}"]
+    if not plan:
+        plan = [t.title for t in decompose_request(request)]
     log.append("plan_created", plan=plan)
-    (task.inputs_dir / "todo.json").write_text(
-        json.dumps([it.to_dict() for it in todo_items], indent=2), encoding="utf-8"
-    )
+    (task.inputs_dir / "todo.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
 
-    # ---------- Retrieve ----------
-    log.append("retrieval_started", query=request)
-    search_results = repo.search(request)
-    top = search_results[0] if search_results else None
-    decision.record(
-        "retrieve",
-        attempted=True,
-        result=(
-            f"found {len(search_results)} candidates; top: "
-            + (f"{top.skill.skill_id} (score={top.score:.2f})" if top else "(none)")
-        ),
-    )
-    for r in search_results[:3]:
-        log.append("artifact_retrieved", skill_id=r.skill.skill_id, score=r.score)
-    log.append("retrieval_finished", count=len(search_results))
-
+    # ----- Choose skill (DSPy skill_chooser). -----
+    catalog_records = repo.catalog()
+    log.append("retrieval_started", catalog_size=len(catalog_records))
     chosen_skill: Skill | None = None
-    if top is not None and top.score >= _SKILL_MATCH_THRESHOLD:
-        chosen_skill = top.skill
+    if catalog_records:
+        if not tracker.can_spend("autonomous_turns", 1):
+            decision.record("retrieve", attempted=False, result="turn budget exhausted before chooser")
+        else:
+            tracker.spend("autonomous_turns", 1)
+            try:
+                chosen_id = program.choose_skill(request, json.dumps(catalog_records))
+            except Exception as exc:  # noqa: BLE001
+                decision.record("retrieve", attempted=True, result=f"chooser failed: {exc!s}")
+                chosen_id = "none"
+            chosen_skill = _resolve_skill(repo, chosen_id)
+            decision.record("retrieve", attempted=True,
+                            result=(f"chose {chosen_skill.skill_id}" if chosen_skill else f"chose none (raw={chosen_id!r})"))
+    else:
+        decision.record("retrieve", attempted=False, result="empty catalog")
+    log.append("retrieval_finished", chosen=(chosen_skill.skill_id if chosen_skill else None))
 
-    # ---------- Compose ----------
     decision.record("compose", attempted=False, result="not implemented (no prior runs index yet)")
 
-    # ---------- Transform or Generate ----------
+    # ----- Transform or Generate. -----
     nb_path: Path | None = None
     generated_code: GeneratedCode | None = None
     error: dict[str, Any] | None = None
@@ -332,65 +354,64 @@ def run_task(
             nb_path = None
 
     if nb_path is None:
-        # Real Generate path: ask the LLM to write a snippet.
         if not tracker.can_spend("autonomous_turns", 1):
-            error = {
-                "type": "BudgetExhaustedError",
-                "message": "max_autonomous_turns reached before generation",
-                "resource": "autonomous_turns",
-            }
+            error = {"type": "BudgetExhaustedError",
+                     "message": "max_autonomous_turns reached before generation",
+                     "resource": "autonomous_turns"}
             decision.record("generate", attempted=False, result="turn budget exhausted")
             decision.choose("generate")
             _finalize(task, manifest, decision, tracker, success=False, error=error, log=log, plan=plan)
-            return AgentResult(
-                task=task, success=False, stage_used="generate",
-                manifest=task.read_manifest(), result_payload=None,
-                answer=_summarize("generate", None, None, error),
-                error=error, plan=plan, turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]),
-            )
+            return AgentResult(task=task, success=False, stage_used="generate",
+                               manifest=task.read_manifest(), result_payload=None,
+                               answer=_summarize("generate", None, None, error),
+                               error=error, plan=plan,
+                               turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]))
+        tracker.spend("autonomous_turns", 1)
         try:
-            tracker.spend("autonomous_turns", 1)
             log.append("generation_started")
-            generated_code = generate_code_for_request(request, llm=llm)
-            log.append("generation_finished", source_chars=len(generated_code.source))
+            source = program.generate_code(request, plan)
+            validate_snippet(source)
+            generated_code = GeneratedCode(source=source, request=request, plan=list(plan))
+            log.append("generation_finished", source_chars=len(source))
             nb_path = build_generated_notebook(request, generated_code, task.task_notebook, plan=plan)
-            decision.record("generate", attempted=True, result="generated executable notebook from LLM")
+            decision.record("generate", attempted=True, result="generated executable notebook via DSPy")
             decision.choose("generate")
-        except (LLMUnavailableError, ValueError, Exception) as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             err_type = type(exc).__name__
             decision.record("generate", attempted=True, result=f"failed: {err_type}: {exc!s}")
             decision.choose("generate")
             error = {"type": err_type, "message": str(exc)}
             _finalize(task, manifest, decision, tracker, success=False, error=error, log=log, plan=plan)
-            return AgentResult(
-                task=task, success=False, stage_used="generate",
-                manifest=task.read_manifest(), result_payload=None,
-                answer=_summarize("generate", None, None, error),
-                error=error, plan=plan, turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]),
-            )
+            return AgentResult(task=task, success=False, stage_used="generate",
+                               manifest=task.read_manifest(), result_payload=None,
+                               answer=_summarize("generate", None, None, error),
+                               error=error, plan=plan,
+                               turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]))
 
-    # ---------- Parameter inference (transform path only) ----------
-    extractor_error: str | None = None
-    if chosen_skill is not None and llm is not None:
-        from .dspy_modules import ParameterExtractor
-
-        if not tracker.can_spend("autonomous_turns", 1):
-            log.append("parameters_skipped", reason="turn budget exhausted")
-        else:
-            try:
-                tracker.spend("autonomous_turns", 1)
-            except BudgetExhaustedError:
-                pass
+    # ----- Parameter inference for the Transform path. -----
+    if chosen_skill is not None:
+        schema_props = ((chosen_skill.manifest.get("input_schema") or {}) if isinstance(chosen_skill.manifest, dict) else {}).get("properties") or {}
+        schema_text = _schema_text(chosen_skill)
+        if schema_props and schema_text:
+            if not tracker.can_spend("autonomous_turns", 1):
+                log.append("parameters_skipped", reason="turn budget exhausted")
             else:
-                extractor = ParameterExtractor(llm=llm)
-                inferred = extractor(request, chosen_skill)
-                extractor_error = getattr(extractor, "last_error", None)
+                tracker.spend("autonomous_turns", 1)
+                try:
+                    raw = program.extract_parameters(
+                        request, schema_text, current_date=date.today().isoformat(),
+                    )
+                    inferred = _parse_extracted_params(raw, schema_props)
+                except Exception as exc:  # noqa: BLE001
+                    log.append("parameters_inferred", inferred={}, error=str(exc))
+                    inferred = {}
+                # Caller-supplied values win.
                 parameters = {**inferred, **parameters}
-                log.append("parameters_inferred", inferred=inferred, error=extractor_error)
+                log.append("parameters_inferred", inferred=inferred)
 
     task.stage_used = decision.chosen
 
-    # ---------- Execute ----------
+    # ----- Execute. -----
     try:
         exec_result = execute_notebook(
             nb_path,
@@ -401,32 +422,22 @@ def run_task(
             budget=tracker,
         )
     except BudgetExhaustedError as exc:
-        _finalize(
-            task, manifest, decision, tracker, success=False,
-            error={"type": "BudgetExhaustedError", "message": str(exc), "resource": exc.resource},
-            log=log, status="budget_exhausted", plan=plan,
-        )
-        return AgentResult(
-            task=task, success=False, stage_used=decision.chosen,
-            manifest=task.read_manifest(), result_payload=None,
-            answer=f"Budget exhausted for {exc.resource}.",
-            error={"type": "BudgetExhaustedError", "message": str(exc), "resource": exc.resource},
-            plan=plan, turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]),
-        )
+        err = {"type": "BudgetExhaustedError", "message": str(exc), "resource": exc.resource}
+        _finalize(task, manifest, decision, tracker, success=False, error=err, log=log,
+                  status="budget_exhausted", plan=plan)
+        return AgentResult(task=task, success=False, stage_used=decision.chosen,
+                           manifest=task.read_manifest(), result_payload=None,
+                           answer=f"Budget exhausted for {exc.resource}.", error=err, plan=plan,
+                           turns_used=int(tracker.snapshot()["used"]["max_autonomous_turns"]))
 
-    # ---------- Repair ----------
-    if not exec_result.success and auto_repair:
-        if tracker.can_spend("autonomous_turns", 1):
-            try:
-                tracker.spend("autonomous_turns", 1)
-            except BudgetExhaustedError:
-                pass
-            else:
-                outcome = repair_and_rerun(task, exec_result, budget=tracker, parameters=parameters, llm=llm)
-                if outcome.repaired and outcome.repaired_result is not None:
-                    exec_result = outcome.repaired_result
+    # ----- Repair (deterministic + DSPy repairer). -----
+    if not exec_result.success and auto_repair and tracker.can_spend("autonomous_turns", 1):
+        tracker.spend("autonomous_turns", 1)
+        outcome = repair_and_rerun(task, exec_result, budget=tracker, parameters=parameters, program=program)
+        if outcome.repaired and outcome.repaired_result is not None:
+            exec_result = outcome.repaired_result
 
-    # ---------- Finalize ----------
+    # ----- Finalize. -----
     success = exec_result.success
     result_payload = exec_result.result
     error = None if success else exec_result.error
@@ -435,7 +446,6 @@ def run_task(
     _finalize(task, manifest, decision, tracker, success=success, error=error, log=log,
               result_path=task.result_json, plan=plan)
 
-    # ---------- Notebook-native canonical state ----------
     turns_used = int(tracker.snapshot()["used"]["max_autonomous_turns"])
     _write_notebook_state(
         task.executed_notebook,
@@ -459,8 +469,6 @@ def run_task(
     )
 
     extras: dict[str, Any] = {}
-    if extractor_error:
-        extras["parameter_extractor_error"] = extractor_error
     if generated_code is not None:
         extras["generated_code"] = generated_code.source
 
@@ -474,7 +482,7 @@ def run_task(
         execution=exec_result,
         error=error,
         extras=extras,
-        plan=plan,
+        plan=list(plan),
         turns_used=turns_used,
     )
 
@@ -524,3 +532,8 @@ def _finalize(
     task.write_readme()
     log.append("manifest_updated", status=final_status, stage_used=decision.chosen)
     log.append("task_finished", status=final_status)
+
+
+# Helper retained for tests that want to inspect what the planner uses when
+# DSPy returns nothing.
+__all__ = ["AgentResult", "run_task", "split_plan"]

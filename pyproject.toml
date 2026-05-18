@@ -18,10 +18,11 @@ dependencies = [
     "ipython>=8.0",
     "pydantic>=2.7,<3",
     "python-slugify>=8.0",
+    "dspy>=3.0.0",
+    "optuna>=4.0.0",
 ]
 
 [project.optional-dependencies]
-llm = ["litellm>=1.83.0"]
 mcp = ["mcp>=1.23.0"]
 dev = [
     "pytest>=8.0",

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from notebook_agent import Budget, BudgetTracker, create_root_task
 from notebook_agent._notebook_io import make_notebook, parameters_cell, write_notebook
-from notebook_agent.litellm_client import LiteLLMClient
 from notebook_agent.notebook_exec import execute_notebook
 from notebook_agent.repair import repair_and_rerun
 
@@ -100,7 +99,12 @@ def test_repair_missing_output_directory(tmp_path: Path) -> None:
     assert rec["diagnosis"]["kind"] == "missing_output_dir"
 
 
-def test_repair_undefined_name_with_fake_llm(tmp_path: Path) -> None:
+def test_repair_undefined_name_via_dspy_program(tmp_path: Path) -> None:
+    import dspy  # type: ignore[import-untyped]
+    from dspy.utils.dummies import DummyLM  # type: ignore[import-untyped]
+
+    from notebook_agent import NotebookAgentProgram
+
     runs_root = tmp_path / "runs"
     task = create_root_task(
         runs_root,
@@ -120,11 +124,9 @@ def test_repair_undefined_name_with_fake_llm(tmp_path: Path) -> None:
     )
     assert not res.success
 
-    fake_llm = LiteLLMClient(provider="fake", fake_response="some_undefined_var = 0")
-    outcome = repair_and_rerun(task, res, budget=tracker, llm=fake_llm)
+    # The DSPy ``repairer`` predictor returns the canned ``fix`` string.
+    dspy.configure(lm=DummyLM([{"fix": "some_undefined_var = 0"}]))
+    program = NotebookAgentProgram()
+    outcome = repair_and_rerun(task, res, budget=tracker, program=program)
     assert outcome.repaired, outcome.repaired_result.error if outcome.repaired_result else None
-    # FakeProvider path returns a deterministic default, which we apply as a
-    # deterministic patch — the strategy may be either "deterministic" or
-    # "llm" depending on which branch triggered. Both are acceptable; what
-    # matters is that the rerun succeeds and is recorded.
-    assert outcome.strategy in ("deterministic", "llm")
+    assert outcome.strategy == "dspy"
