@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notebook-agent"
+version = "0.1.0"
+description = "Notebook-native budget-aware Retrieve/Compose/Transform/Generate agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "wiki3-ai" }]
+dependencies = [
+    "papermill>=2.6.0",
+    "nbformat>=5.10.0",
+    "nbclient>=0.10.0",
+    "ipykernel>=6.29.0",
+    "pydantic>=2.7,<3",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-slugify>=8.0",
+]
+
+[project.optional-dependencies]
+llm = ["litellm>=1.83.0"]
+mcp = ["mcp>=1.23.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+notebook-agent = "notebook_agent.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["notebook_agent*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+notebook_agent = ["builtin_skills/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: tests that exercise real services (LM Studio, network, MCP clients) - skipped unless explicitly enabled",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
