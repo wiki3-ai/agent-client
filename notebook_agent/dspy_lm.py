@@ -47,8 +47,8 @@ def build_dspy_lm(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] |
         model=model,
         api_base=client.base_url,
         api_key=client.api_key,
-        temperature=0.0,
-        max_tokens=2048,
+        temperature=client.temperature,
+        max_tokens=client.max_tokens,
         cache=False,
     )
 

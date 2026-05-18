@@ -32,6 +32,12 @@ from .dspy_lm import build_dspy_lm, configure_dspy, using_client
 from .events import EventLog
 from .litellm_client import LiteLLMClient
 from .magics import load_ipython_extension, unload_ipython_extension
+from .notebook_init import (
+    NotebookConfig,
+    get_notebook_config,
+    init_notebook,
+    notebook_parameters,
+)
 from .optimize import optimize_with_gepa, optimize_with_mipro
 from .program import (
     ChooseSkill,
@@ -65,6 +71,7 @@ __all__ = [
     "GenerateCode",
     "LiteLLMClient",
     "NotebookAgentProgram",
+    "NotebookConfig",
     "PlanTask",
     "RepairNotebook",
     "RouteTask",
@@ -77,7 +84,10 @@ __all__ = [
     "build_dspy_lm",
     "configure_dspy",
     "create_root_task",
+    "get_notebook_config",
+    "init_notebook",
     "load_ipython_extension",
+    "notebook_parameters",
     "optimize_with_gepa",
     "optimize_with_mipro",
     "root_template_path",

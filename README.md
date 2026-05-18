@@ -102,6 +102,45 @@ Or via the magic:
 %task --continue try again, count only unique words
 ```
 
+### Per-call LM overrides
+
+The magics accept a couple of flags before the prompt that override the
+LM settings for that one call only (useful when a thinking model needs a
+bigger token budget):
+
+```python
+%task --max-tokens 32000 explain in detail why ...
+%task --temperature 0.7 --continue keep going but more creative
+```
+
+Both flags also work with `%%task`. Defaults come from
+`NOTEBOOK_AGENT_MAX_TOKENS` (16384) and `NOTEBOOK_AGENT_TEMPERATURE`
+(0.0); the override is scoped to the single magic invocation and
+does not mutate the notebook-wide DSPy config.
+
+### Notebook initialization (Papermill parameters + DSPy GEPA surface)
+
+For a new user notebook the recommended layout is:
+
+1. `%load_ext notebook_agent` to register the magics.
+2. A Papermill **`parameters`**-tagged cell that declares the optimizable
+   knobs (`provider`, `model`, `base_url`, `api_key`, `max_tokens`,
+   `temperature`, `max_autonomous_turns`, `runs_root`, `skill_dirs`).
+3. A follow-up cell that calls `notebook_agent.init_notebook(...)` with
+   those names — this builds a `LiteLLMClient`, configures
+   `dspy.settings.lm`, and stashes notebook-wide defaults that every
+   `%task` / `%%task` magic picks up automatically.
+4. Any number of `%task` / `%%task` cells.
+
+See [examples/first.ipynb](examples/first.ipynb) for the canonical layout.
+
+These same parameter names are the **DSPy GEPA hyperparameter search
+space**. Call `notebook_agent.notebook_parameters()` to get the schema
+(names, types, defaults, bounds). When the optimizer runs, it mutates
+the values in the `parameters` cell, re-executes the notebook via
+Papermill, and scores each trial against the trajectory captured under
+`runs/` (events, manifests, executed notebooks).
+
 The only enforced autonomy limit is `max_autonomous_turns` (default 6) —
 the number of LLM-driven steps the agent may take before reporting back to
 you. Set it on the call: `run_task(prompt, max_autonomous_turns=10)`.
@@ -211,6 +250,8 @@ ruff check notebook_agent tests
 | `NOTEBOOK_AGENT_MODEL` | `lm_studio/model-name` | Model identifier passed to LiteLLM |
 | `NOTEBOOK_AGENT_BASE_URL` | `http://host.docker.internal:1234/v1` | OpenAI-compatible base URL |
 | `NOTEBOOK_AGENT_API_KEY` | `lm-studio` | API key passed to LiteLLM |
+| `NOTEBOOK_AGENT_MAX_TOKENS` | `16384` | Max output tokens for every LM call. Bump higher for thinking models that stream long chain-of-thought before the answer. |
+| `NOTEBOOK_AGENT_TEMPERATURE` | `0.0` | Sampling temperature passed to the LM. |
 | `NOTEBOOK_AGENT_LIVE_LM` | _(unset)_ | Set to `1` to opt in to live LM tests |
 
 ## Non-goals (first version)
