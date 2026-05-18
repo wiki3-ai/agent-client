@@ -6,6 +6,11 @@ Loaded with ``%load_ext notebook_agent`` (or automatically via
 * ``%task <prompt>`` — line magic. Runs ``run_task(prompt)`` and renders the
   result in the notebook.
 * ``%%task`` — cell magic. The cell body is the multi-line prompt.
+* ``%agent_init [key=value …]`` — reconfigure the notebook-wide
+  :class:`NotebookConfig` (model, max_tokens, temperature, …). Loading the
+  extension already calls :func:`init_notebook` once with env-derived
+  defaults, so a bare notebook works without any boilerplate; this magic
+  is for the override case.
 
 The magics route through the **same** :func:`notebook_agent.run_task`
 function the public API exposes, so behaviour is identical.
@@ -23,13 +28,14 @@ most-recent :class:`AgentResult` from the IPython user namespace (stored as
 
 from __future__ import annotations
 
+import ast
 import shlex
 from typing import Any
 
 from .agent import AgentResult, run_task
 from .dspy_lm import using_client
 from .litellm_client import LiteLLMClient
-from .notebook_init import get_notebook_config
+from .notebook_init import get_notebook_config, init_notebook
 
 
 def _render(result: AgentResult) -> Any:
@@ -150,13 +156,25 @@ def task_cell_magic(line: str, cell: str, *, ip: Any | None = None) -> Any:
 
 
 def load_ipython_extension(ipython: Any) -> None:
-    """Entry point for ``%load_ext notebook_agent``."""
+    """Entry point for ``%load_ext notebook_agent``.
+
+    Auto-initializes the notebook with env-derived defaults so a bare
+    notebook can call ``%task`` immediately. Users who want different
+    settings can run ``%agent_init key=value …`` (or call
+    :func:`notebook_agent.init_notebook` directly with full kwargs).
+    """
     from IPython.core.magic import (  # type: ignore[import-not-found]
         Magics,
         cell_magic,
         line_magic,
         magics_class,
     )
+
+    # Default initialization — picks up NOTEBOOK_AGENT_* env vars.
+    try:
+        init_notebook()
+    except Exception as exc:  # pragma: no cover - shouldn't happen
+        print(f"notebook_agent: default init failed: {exc!r}")
 
     @magics_class
     class _TaskMagics(Magics):
@@ -168,7 +186,65 @@ def load_ipython_extension(ipython: Any) -> None:
         def _cell(self, line: str, cell: str) -> Any:
             return task_cell_magic(line, cell, ip=self.shell)
 
+        @line_magic("agent_init")
+        def _init(self, line: str) -> Any:
+            return agent_init_magic(line)
+
     ipython.register_magics(_TaskMagics)
+
+
+def agent_init_magic(line: str) -> Any:
+    """``%agent_init [key=value …]`` — reconfigure the notebook.
+
+    Each ``key=value`` token is parsed with :func:`ast.literal_eval` (so
+    ``model=lm_studio/foo`` is treated as a string, ``max_tokens=32000`` as
+    an int, ``temperature=0.7`` as a float, ``skill_dirs=['/x','/y']`` as a
+    list). Keys with no recognised init kwarg are ignored. Calling with no
+    arguments resets to env-derived defaults.
+    """
+    kwargs = _parse_kv_pairs(line)
+    client = init_notebook(**kwargs)
+    cfg = get_notebook_config()
+    return {
+        "client": client.to_dict(),
+        "max_autonomous_turns": cfg.max_autonomous_turns,
+        "runs_root": cfg.runs_root,
+        "skill_dirs": cfg.skill_dirs,
+    }
+
+
+_INIT_KWARGS = {
+    "provider", "model", "base_url", "api_key",
+    "max_tokens", "temperature",
+    "max_autonomous_turns", "runs_root", "skill_dirs",
+}
+
+
+def _parse_kv_pairs(line: str) -> dict[str, Any]:
+    """Parse a ``%agent_init`` line into kwargs.
+
+    Accepts shell-style tokens, each of the form ``key=value``. Values are
+    parsed with :func:`ast.literal_eval` if possible (so quoting works for
+    strings, lists, etc.), falling back to the raw string.
+    """
+    try:
+        tokens = shlex.split(line.strip())
+    except ValueError:
+        tokens = line.strip().split()
+    out: dict[str, Any] = {}
+    for tok in tokens:
+        if "=" not in tok:
+            continue
+        key, _, raw = tok.partition("=")
+        key = key.strip()
+        if key not in _INIT_KWARGS:
+            continue
+        raw = raw.strip()
+        try:
+            out[key] = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            out[key] = raw
+    return out
 
 
 def unload_ipython_extension(ipython: Any) -> None:  # pragma: no cover - rarely called
@@ -177,6 +253,7 @@ def unload_ipython_extension(ipython: Any) -> None:  # pragma: no cover - rarely
 
 
 __all__ = [
+    "agent_init_magic",
     "load_ipython_extension",
     "task_cell_magic",
     "task_line_magic",

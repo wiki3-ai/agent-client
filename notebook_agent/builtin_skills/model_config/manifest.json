@@ -1,0 +1,31 @@
+{
+  "skill_id": "core.model_config",
+  "name": "Model Config",
+  "version": "0.1.0",
+  "entrypoint": "skill.ipynb",
+  "description": "Retrieve the provider's defaults for a given model (context window, loaded state, family) and emit a recommended max_tokens. Per-model skill notebooks should start by composing this skill so their downstream parameter choices are grounded in what the provider actually advertises (e.g. LM Studio's /api/v0/models/{id} endpoint). Documentation lives in the skill notebook itself (markdown cells).",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "model": {"type": "string", "description": "Provider-prefixed model id, e.g. lm_studio/google/gemma-4-31b. Defaults to the notebook's configured client."},
+      "base_url": {"type": "string", "description": "OpenAI-compatible base URL. Defaults to the notebook's configured client."},
+      "headroom_tokens": {"type": "integer", "default": 1024, "description": "Tokens to reserve below the context window for the prompt when computing recommended_max_tokens."}
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "string"},
+      "base_url": {"type": "string"},
+      "context_length": {"type": "integer"},
+      "loaded_context_length": {"type": "integer"},
+      "recommended_max_tokens": {"type": "integer"},
+      "state": {"type": "string"},
+      "family": {"type": "string"},
+      "arch": {"type": "string"}
+    },
+    "required": ["id", "base_url"]
+  },
+  "tags": ["core", "model", "config", "provider"]
+}

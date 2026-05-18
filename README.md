@@ -120,19 +120,47 @@ does not mutate the notebook-wide DSPy config.
 
 ### Notebook initialization (Papermill parameters + DSPy GEPA surface)
 
-For a new user notebook the recommended layout is:
+The bare minimum for a user notebook is now just:
 
-1. `%load_ext notebook_agent` to register the magics.
-2. A Papermill **`parameters`**-tagged cell that declares the optimizable
-   knobs (`provider`, `model`, `base_url`, `api_key`, `max_tokens`,
-   `temperature`, `max_autonomous_turns`, `runs_root`, `skill_dirs`).
-3. A follow-up cell that calls `notebook_agent.init_notebook(...)` with
-   those names — this builds a `LiteLLMClient`, configures
-   `dspy.settings.lm`, and stashes notebook-wide defaults that every
-   `%task` / `%%task` magic picks up automatically.
-4. Any number of `%task` / `%%task` cells.
+```
+%load_ext notebook_agent
+%task what is the capital of france?
+```
 
-See [examples/first.ipynb](examples/first.ipynb) for the canonical layout.
+Loading the extension automatically calls `init_notebook()` with the
+`NOTEBOOK_AGENT_*` environment defaults, configures `dspy.settings.lm`,
+and stashes notebook-wide defaults for every `%task` / `%%task` call.
+
+To change settings at runtime, use the `%agent_init` line magic — no
+boilerplate Python required:
+
+```
+%agent_init max_tokens=32000 temperature=0.2
+%agent_init model="lm_studio/google/gemma-4-31b"
+%agent_init max_autonomous_turns=10
+```
+
+`%agent_init` accepts any of: `provider`, `model`, `base_url`, `api_key`,
+`max_tokens`, `temperature`, `max_autonomous_turns`, `runs_root`,
+`skill_dirs`. With no arguments it returns the current config.
+
+For Papermill-driven runs (and the DSPy GEPA optimizer mutating
+hyperparameters), keep a `parameters`-tagged cell declaring those same
+names and a follow-up cell that re-applies them via `%agent_init` (or
+calls `notebook_agent.init_notebook(...)` explicitly). See
+[examples/first.ipynb](examples/first.ipynb) for the canonical layout.
+
+#### Per-model defaults from the provider
+
+`notebook_agent.model_info(client)` queries the configured provider for
+the model's real context window and emits a `recommended_max_tokens`.
+LM Studio's `/api/v0/models/{id}` endpoint is preferred (it reports
+`loaded_context_length`, `max_context_length`, `state`, `family`,
+`arch`); the standard OpenAI `/v1/models` listing is the fallback.
+
+The built-in `core.model_config` skill wraps this so per-model skill
+notebooks can begin by retrieving the provider's defaults and writing
+them to `outputs/result.json` as durable provenance for GEPA.
 
 These same parameter names are the **DSPy GEPA hyperparameter search
 space**. Call `notebook_agent.notebook_parameters()` to get the schema
