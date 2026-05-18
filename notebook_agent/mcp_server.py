@@ -191,3 +191,25 @@ def serve_stdio(*, runs_root: Path | str = "runs", skill_dirs: list[Path | str] 
     """Run the MCP server over stdio. Blocks until the client disconnects."""
     server = build_fastmcp(runs_root=runs_root, skill_dirs=skill_dirs)
     server.run()
+
+
+def _parse_main_args(argv: list[str]) -> tuple[Path, list[Path]]:
+    """Tiny argparse for ``python -m notebook_agent.mcp_server``.
+
+    This is NOT a user CLI — it's a server launcher for other agents. The
+    notebook-agent user UX is a Jupyter notebook (see :mod:`notebook_agent`).
+    """
+    import argparse
+
+    p = argparse.ArgumentParser(prog="python -m notebook_agent.mcp_server")
+    p.add_argument("--runs-root", default="runs", type=Path)
+    p.add_argument("--skills-dir", action="append", default=[], type=Path)
+    ns = p.parse_args(argv)
+    return ns.runs_root, ns.skills_dir
+
+
+if __name__ == "__main__":  # pragma: no cover - launched as a server
+    import sys
+
+    runs_root, skill_dirs = _parse_main_args(sys.argv[1:])
+    serve_stdio(runs_root=runs_root, skill_dirs=list(skill_dirs))

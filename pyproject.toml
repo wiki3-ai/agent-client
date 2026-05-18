@@ -15,9 +15,8 @@ dependencies = [
     "nbformat>=5.10.0",
     "nbclient>=0.10.0",
     "ipykernel>=6.29.0",
+    "ipython>=8.0",
     "pydantic>=2.7,<3",
-    "typer>=0.12",
-    "rich>=13.7",
     "python-slugify>=8.0",
 ]
 
@@ -31,7 +30,9 @@ dev = [
 ]
 
 [project.scripts]
-notebook-agent = "notebook_agent.cli:app"
+# notebook_agent has no user-facing CLI. The user UX is a Jupyter notebook —
+# users `from notebook_agent import run_task`. The MCP server (used by other
+# agents, not humans) is launched via `python -m notebook_agent.mcp_server`.
 
 [tool.setuptools.packages.find]
 include = ["notebook_agent*"]
@@ -58,5 +59,4 @@ select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"notebook_agent/cli.py" = ["B008"]  # Typer requires call-in-default
 "tests/*" = ["E741"]

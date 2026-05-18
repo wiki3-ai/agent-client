@@ -8,12 +8,25 @@ unit is a [Papermill](https://papermill.readthedocs.io/)-executed Jupyter
 notebook.
 
 This package implements [`coding_agent_project_prompt.md`](coding_agent_project_prompt.md)
-end-to-end across all ten milestones.
+across all ten milestones.
 
 > **Note**: the parent repository (`wiki3-ai/agent-client`) was used for an
 > earlier exploratory implementation. The Python package shipped here is
-> named **`notebook_agent`** (per §13 of the prompt) and is the starting
-> point for what will be moved to `wiki3-ai/notebook-agent`.
+> named **`notebook_agent`** and is the starting point for what will be
+> moved to `wiki3-ai/notebook-agent`.
+
+## UX: Jupyter notebooks
+
+**There is no user-facing CLI.** The user experience for `notebook-agent`
+is a regular Python Jupyter notebook — you import the package, call
+`run_task(...)`, and use the `show_*` display helpers to inspect the
+result inline. Agent skills may exec CLI tools internally (e.g. `git`,
+`pytest`, language servers), but that is an implementation detail of a
+skill, not part of the UX.
+
+The dedicated "Agent Kernel" — a custom Jupyter kernel that mediates LLM
+and tool calls — has been **deferred**. Users run inside a standard
+Python kernel for now.
 
 ## Install
 
@@ -22,24 +35,32 @@ pip install -e ".[llm,mcp,dev]"
 ```
 
 Optional extras:
+
 - `llm` — LiteLLM client (LM Studio / OpenAI / etc.)
-- `mcp` — MCP server wrapper
+- `mcp` — MCP server wrapper (used by *other* agents, not by humans)
 - `dev` — pytest + ruff
 
 ## Quickstart
 
-```bash
-notebook-agent init .
-notebook-agent run "Use the echo skill to echo hello graph agent" \
-    --params <(echo '{"message":"hello graph agent"}')
-notebook-agent graph runs/<YYYY>/<MM>/<DD>/<HHMMSS-task-slug>
-notebook-agent manifest runs/<YYYY>/<MM>/<DD>/<HHMMSS-task-slug>
+Open [`examples/quickstart.ipynb`](examples/quickstart.ipynb) in Jupyter,
+or run the same cells yourself:
+
+```python
+from notebook_agent import run_task, show_task, show_answer, show_graph
+
+result = run_task(
+    "Use the echo skill to echo hello from a Jupyter notebook",
+    parameters={"message": "hello from a Jupyter notebook"},
+)
+show_task(result)     # → Markdown summary
+show_answer(result)   # → the rendered answer
+show_graph(result)    # → the task/subtask tree
 ```
 
-You will get a run directory like:
+This produces a run directory like:
 
 ```text
-runs/2026/05/18/083512-use-the-echo-skill-...
+runs/2026/05/18/093015-use-the-echo-skill-...
 ├── task.json
 ├── manifest.json
 ├── README.md
@@ -47,10 +68,60 @@ runs/2026/05/18/083512-use-the-echo-skill-...
 ├── executed.ipynb
 ├── inputs/{request.md,parameters.json}
 ├── outputs/{result.json,answer.md}
-├── logs/{events.jsonl,stdout.log,stderr.log}
+├── logs/{events.jsonl,stdout.log,stderr.log,lm_calls.jsonl}
 ├── artifacts/
 └── children/
 ```
+
+## Public API
+
+Everything a user needs lives at the package top level:
+
+| Function / class | Purpose |
+|---|---|
+| `run_task(request, *, parameters=…, runs_root=…, budget=…, llm=…)` | Run a task end-to-end (Retrieve → Compose → Transform → Generate). |
+| `search_skills(query, *, top=10)` | Lexical search over built-in + user skills. |
+| `TaskGraph.load(directory)` | Reload an existing run as a task graph. |
+| `Task`, `Budget`, `BudgetTracker` | Data types describing a task and its budget. |
+| `show_task` / `show_answer` / `show_manifest` / `show_result` / `show_events` / `show_graph` / `show_notebook` | IPython display helpers for inline rendering. |
+
+## Architecture summary
+
+- **`task_graph`** owns the on-disk task layout (spec §7–§9).
+- **`events`** is append-only JSONL.
+- **`budget`** tracks `notebook_executions`, `lm_calls`, `repair_attempts`,
+  `wall_time_seconds`, etc., and raises `BudgetExhaustedError` *before*
+  expensive work happens.
+- **`notebook_exec`** runs notebooks via Papermill, captures cell streams
+  and errors, and integrates with the budget tracker and event log.
+- **`skills`** is a lexical search over `manifest.json` + `SKILL.md` files
+  under `builtin_skills/` (shipped) and any user-supplied directories.
+- **`transform`** turns a `SKILL.md` into a parameterized notebook with the
+  standard spec §12 cells (parameters / setup / validate / execute /
+  write_result / manifest_update / smoke).
+- **`repair`** classifies common failure modes and applies a deterministic
+  patch. LLM-assisted repair is available when a configured `LiteLLMClient`
+  is supplied.
+- **`agent.run_task`** orchestrates R→C→T→G end-to-end, calls repair on
+  failure and writes `outputs/answer.md`.
+- **`display`** offers IPython-friendly helpers for inline rendering of
+  tasks, manifests, event logs, and the task graph.
+- **`mcp_server`** exposes the agent over MCP for **other agents**
+  (`run_task`, `run_skill`, `search_skills`, `read_manifest`,
+  `get_task_graph`, `execute_notebook`). Launch it with:
+
+  ```bash
+  python -m notebook_agent.mcp_server --runs-root runs
+  ```
+
+  This is not a user CLI; it's a server for inter-agent communication.
+- **`litellm_client`** wraps LiteLLM with a `fake` provider (uses
+  LiteLLM's `mock_response` kwarg) so tests and offline workflows stay
+  deterministic. LM Studio is the default real backend
+  (`NOTEBOOK_AGENT_BASE_URL`, default `http://host.docker.internal:1234/v1`).
+- **`dspy_modules`** are stubs (`TaskRouter`, `SkillRetriever`,
+  `SkillToNotebookTransformer`, `NotebookRepairer`, `ResultSynthesizer`,
+  `ParameterExtractor`) ready to be replaced by DSPy programs.
 
 ## Milestone map
 
@@ -64,48 +135,20 @@ runs/2026/05/18/083512-use-the-echo-skill-...
 | 6 | Budget manager | `budget.py` | `tests/integration/test_milestone_06_budget.py`, `tests/unit/test_budget.py` |
 | 7 | Repair loop | `repair.py` | `tests/integration/test_milestone_07_repair.py` |
 | 8 | End-to-end agent | `agent.py` | `tests/integration/test_milestone_08_agent.py` |
-| 9 | CLI + MCP service | `cli.py`, `mcp_server.py` | `tests/integration/test_milestone_09_cli_mcp.py` |
+| 9 | **Notebook UX** + MCP | `display.py`, `examples/quickstart.ipynb`, `mcp_server.py` | `tests/integration/test_milestone_09_notebook_ux.py` |
 | 10 | LiteLLM + DSPy stubs | `litellm_client.py`, `dspy_modules.py` | `tests/integration/test_milestone_10_litellm.py` |
 
-## Architecture summary
-
-- **`task_graph`** owns the on-disk task layout (Sections 7–9 of the spec).
-- **`events`** is append-only JSONL.
-- **`budget`** tracks `notebook_executions`, `lm_calls`, `repair_attempts`,
-  `wall_time_seconds`, etc., and raises `BudgetExhaustedError` *before*
-  expensive work happens.
-- **`notebook_exec`** runs notebooks via Papermill, captures cell streams
-  and errors, and integrates with the budget tracker and event log.
-- **`skills`** is a lexical search over `manifest.json` + `SKILL.md` files
-  under `builtin_skills/` (shipped) and any user-supplied directories.
-- **`transform`** turns a `SKILL.md` into a parameterized notebook with the
-  standard Section 12 cells (parameters / setup / validate / execute /
-  write_result / manifest_update / smoke).
-- **`repair`** classifies common failure modes (missing output directory,
-  unknown name, missing import) and applies a deterministic patch.
-  LLM-assisted repair is available when a configured `LiteLLMClient` is
-  supplied.
-- **`agent.run_task`** orchestrates R→C→T→G end-to-end, calling repair on
-  failure and writing `outputs/answer.md`.
-- **`cli`** is a Typer app exposing `init`, `run`, `search-skills`,
-  `execute-notebook`, `graph`, `manifest`, and `mcp`.
-- **`mcp_server`** exposes the same surface via FastMCP for use by other
-  agents (`run_task`, `run_skill`, `search_skills`, `read_manifest`,
-  `get_task_graph`, `execute_notebook`).
-- **`litellm_client`** wraps LiteLLM with a `fake` provider (uses
-  LiteLLM's `mock_response` kwarg) so tests and offline workflows stay
-  deterministic. LM Studio is the default real backend
-  (`NOTEBOOK_AGENT_BASE_URL`, default `http://host.docker.internal:1234/v1`).
-- **`dspy_modules`** are stubs (`TaskRouter`, `SkillRetriever`,
-  `SkillToNotebookTransformer`, `NotebookRepairer`, `ResultSynthesizer`)
-  ready to be replaced by DSPy programs.
+> Spec §17 defined a CLI for milestone 9. That requirement has been
+> superseded: the user UX is a Jupyter notebook, demonstrated by
+> `examples/quickstart.ipynb` and exercised by the milestone-9 test which
+> papermill-executes the quickstart end-to-end.
 
 ## Testing
 
 ```bash
-pytest                            # all tests (live ones skip without env var)
-pytest -m "not live"              # unit + integration only
-NOTEBOOK_AGENT_LIVE_LM=1 pytest -m live  # exercises real LM Studio
+pytest                                    # all tests (live LM tests skip by default)
+pytest -m "not live"                      # unit + integration only
+NOTEBOOK_AGENT_LIVE_LM=1 pytest -m live   # exercises real LM Studio
 ruff check notebook_agent tests
 ```
 
@@ -124,8 +167,9 @@ ruff check notebook_agent tests
 ## Non-goals (first version)
 
 See spec §27. No multi-agent orchestration, no distributed scheduler, no
-embedding search, no automatic GEPA optimization yet — those are explicitly
-deferred until the core RCTG flow is solid.
+embedding search, no automatic GEPA optimization, and no custom Jupyter
+"Agent Kernel" yet — those are explicitly deferred until the core RCTG
+flow is solid.
 
 ## License
 
