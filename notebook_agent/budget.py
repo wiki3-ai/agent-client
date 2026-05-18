@@ -20,6 +20,7 @@ _RESOURCE_FIELDS: tuple[str, ...] = (
     "max_parallel_subtasks",
     "max_web_searches",
     "max_generated_code_tokens",
+    "max_autonomous_turns",
 )
 
 # Mapping of resource short-name -> budget field name.
@@ -35,6 +36,7 @@ _RESOURCE_MAP: dict[str, str] = {
     "parallel_subtasks": "max_parallel_subtasks",
     "web_searches": "max_web_searches",
     "generated_code_tokens": "max_generated_code_tokens",
+    "autonomous_turns": "max_autonomous_turns",
 }
 
 
@@ -65,6 +67,7 @@ class Budget:
     max_parallel_subtasks: int | None = None
     max_web_searches: int | None = None
     max_generated_code_tokens: int | None = None
+    max_autonomous_turns: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> Budget:

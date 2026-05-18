@@ -39,7 +39,7 @@ include = ["notebook_agent*"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
-notebook_agent = ["builtin_skills/**/*"]
+notebook_agent = ["builtin_skills/**/*", "templates/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

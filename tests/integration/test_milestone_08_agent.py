@@ -46,17 +46,29 @@ def test_run_task_echo_end_to_end(tmp_path: Path) -> None:
     assert "task_finished" in kinds
 
 
-def test_run_task_no_matching_skill_records_clear_failure(tmp_path: Path) -> None:
+def test_run_task_no_matching_skill_falls_through_to_generate(tmp_path: Path) -> None:
+    """Per nb-agent.md: with no matching skill, the agent attempts Generate.
+
+    With no LLM available, that path fails gracefully with a clear
+    unavailable-model error (spec §Milestone 10), but stage_used is still
+    "generate" — the agent did the right thing, the environment couldn't
+    supply a model.
+    """
     runs_root = tmp_path / "runs"
+    # Force unreachable LM so generation can't actually run.
+    from notebook_agent.litellm_client import LiteLLMClient
+
+    llm = LiteLLMClient(provider="lm_studio", base_url="http://127.0.0.1:1/", api_key="x")
     result = run_task(
         "xyzzy123 plugh quux frobnicate",
         runs_root=runs_root,
-        skill_dirs=[],  # only built-in skills available; none of these tokens match
+        skill_dirs=[],
+        llm=llm,
     )
     assert not result.success
     assert result.stage_used == "generate"
     assert result.error is not None
-    assert result.error["type"] == "NoSkillFound"
+    assert result.error["type"] in {"LLMUnavailableError", "ValueError"}
     m = json.loads(result.task.manifest_json.read_text())
     assert m["status"] == "failed"
-    assert m["stage_decision"]["generate"]["attempted"] in (False, True)
+    assert m["stage_decision"]["generate"]["attempted"] is True

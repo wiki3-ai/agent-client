@@ -13,9 +13,34 @@ DEFAULT_SKILL_DIRS = ("skills",)
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
+# Common stopwords that should not contribute to skill-match scores. Without
+# this filter generic prompts trivially match any skill whose description
+# contains words like "a", "the", "and", "notebook" — which is what made the
+# agent silently route every prompt to the echo skill.
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "if", "then", "else",
+        "of", "in", "on", "at", "to", "for", "from", "by", "with",
+        "is", "are", "was", "were", "be", "been", "being",
+        "do", "does", "did", "doing",
+        "have", "has", "had",
+        "this", "that", "these", "those",
+        "i", "you", "we", "they", "it", "he", "she",
+        "my", "your", "our", "their",
+        "as", "so", "not", "no", "yes",
+        "can", "will", "would", "should", "may", "might",
+        "use", "using", "used",
+        "please", "task", "request",
+        # Notebook/agent infrastructure words that should not move the score:
+        # any task is "in a notebook", so matching on "notebook" or "agent"
+        # told us nothing about skill relevance and produced false positives.
+        "notebook", "agent", "code", "python",
+    }
+)
+
 
 def _tokens(text: str) -> list[str]:
-    return [t.lower() for t in _TOKEN_RE.findall(text or "")]
+    return [t.lower() for t in _TOKEN_RE.findall(text or "") if t.lower() not in _STOPWORDS]
 
 
 @dataclass
@@ -155,7 +180,13 @@ class SkillRepository:
 
 
 def _score_skill(skill: Skill, q_tokens: set[str]) -> tuple[float, list[str]]:
-    """Simple lexical scorer with field weights and exact-name boosts."""
+    """Simple lexical scorer with field weights and exact-name boosts.
+
+    A skill only scores when at least one query token hits its name, id, or
+    tags — pure description/markdown matches alone are not enough. This
+    prevents a skill (e.g. ``core.echo``) from claiming a prompt simply because
+    its description happens to mention generic words.
+    """
     if not q_tokens:
         return 0.0, []
     name_tokens = set(_tokens(skill.name) + _tokens(skill.directory.name))
@@ -166,22 +197,28 @@ def _score_skill(skill: Skill, q_tokens: set[str]) -> tuple[float, list[str]]:
 
     score = 0.0
     matched: set[str] = set()
+    strong_hit = False
     for tok in q_tokens:
         if tok in name_tokens:
             score += 3.0
             matched.add(tok)
+            strong_hit = True
         if tok in id_tokens:
             score += 2.5
             matched.add(tok)
+            strong_hit = True
         if tok in tag_tokens:
             score += 2.0
             matched.add(tok)
+            strong_hit = True
         if tok in desc_tokens:
             score += 1.5
             matched.add(tok)
         if tok in md_tokens:
             score += 1.0
             matched.add(tok)
+    if not strong_hit:
+        return 0.0, []
     # Light boost when many query terms match.
     score *= 1.0 + 0.1 * len(matched)
     return score, sorted(matched)

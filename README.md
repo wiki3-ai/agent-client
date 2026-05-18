@@ -46,16 +46,49 @@ Open [`examples/quickstart.ipynb`](examples/quickstart.ipynb) in Jupyter,
 or run the same cells yourself:
 
 ```python
-from notebook_agent import run_task, show_task, show_answer, show_graph
+from notebook_agent import run_task, show_task, show_answer
 
+# The only required argument is the prompt. The agent auto-builds its LLM
+# client from environment variables (LM Studio by default) and figures out
+# the rest. See nb-agent.md for the focused MVP spec.
 result = run_task(
-    "Use the echo skill to echo hello from a Jupyter notebook",
-    parameters={"message": "hello from a Jupyter notebook"},
+    "Create and execute a notebook that counts the words in: "
+    "hello from the graph notebook agent"
 )
-show_task(result)     # → Markdown summary
+show_task(result)     # → Markdown summary with plan, stage, result
 show_answer(result)   # → the rendered answer
-show_graph(result)    # → the task/subtask tree
 ```
+
+You can also use the IPython magics, which route through the same code path:
+
+```python
+%load_ext notebook_agent
+
+%task count the words in "hello from the graph notebook agent"
+
+# or for multi-line prompts:
+%%task
+Build a small parser that extracts the dates from this text and
+returns them as a JSON list.
+```
+
+To continue an in-progress task with feedback or corrections, pass the
+prior result back in:
+
+```python
+result2 = run_task("that's wrong, try again — count only unique words",
+                   continue_from=result)
+```
+
+Or via the magic:
+
+```python
+%task --continue try again, count only unique words
+```
+
+The only enforced autonomy limit is `max_autonomous_turns` (default 6) —
+the number of LLM-driven steps the agent may take before reporting back to
+you. Set it on the call: `run_task(prompt, max_autonomous_turns=10)`.
 
 This produces a run directory like:
 

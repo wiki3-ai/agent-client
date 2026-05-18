@@ -29,6 +29,7 @@ from .display import (
     show_task,
 )
 from .events import EventLog
+from .magics import load_ipython_extension, unload_ipython_extension
 from .skills import SkillRepository
 from .task_graph import Task, TaskGraph, create_root_task
 
@@ -50,6 +51,13 @@ def search_skills(query: str, *, skill_dirs: list[str] | None = None, top: int =
     return repo.search(query, top_k=top)
 
 
+def root_template_path():
+    """Return the path to the bundled Papermill root agent notebook template."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent / "templates" / "root_agent.ipynb"
+
+
 __all__ = [
     "AgentResult",
     "Budget",
@@ -61,6 +69,8 @@ __all__ = [
     "TaskGraph",
     "__version__",
     "create_root_task",
+    "load_ipython_extension",
+    "root_template_path",
     "run_task",
     "search_skills",
     "show_answer",
@@ -70,4 +80,5 @@ __all__ = [
     "show_notebook",
     "show_result",
     "show_task",
+    "unload_ipython_extension",
 ]
