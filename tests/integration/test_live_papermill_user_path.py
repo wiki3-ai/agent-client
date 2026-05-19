@@ -132,28 +132,36 @@ def _flatten_outputs(nb: nbformat.NotebookNode) -> str:
     return "\n".join(parts)
 
 
-def _env_for_kernel(tmp_path: Path) -> dict[str, str]:
-    """Env passed through to the Papermill kernel.
-
-    Critically: NO ``NOTEBOOK_AGENT_REQUEST_TIMEOUT``. We're testing that
-    the agent does NOT cancel slow LM calls from the client side.
-    """
-    env = os.environ.copy()
-    env["NOTEBOOK_AGENT_BASE_URL"] = LIVE_BASE_URL
-    env["NOTEBOOK_AGENT_API_KEY"] = LIVE_API_KEY
-    # Force hermetic session/runs roots under tmp_path so the test leaves
-    # nothing behind in the workspace.
-    env["NOTEBOOK_AGENT_SESSIONS_ROOT"] = str(tmp_path / "sessions")
-    env["NOTEBOOK_AGENT_RUNS_ROOT"] = str(tmp_path / "runs")
-    # Make sure nothing inherits a stale timeout from the shell that ran
-    # pytest. The whole point of this test is "no client-side cancels".
-    env.pop("NOTEBOOK_AGENT_REQUEST_TIMEOUT", None)
-    env.pop("NOTEBOOK_AGENT_MAX_TOKENS", None)
-    env.pop("NOTEBOOK_AGENT_REASONING_EFFORT", None)
+_VARS_TO_CLEAR = (
+    # Anything that could cause client-side cancellation; the whole
+    # point of this suite is "no time/token caps in the user path".
+    "NOTEBOOK_AGENT_REQUEST_TIMEOUT",
+    "NOTEBOOK_AGENT_MAX_TOKENS",
+    "NOTEBOOK_AGENT_REASONING_EFFORT",
     # Do NOT pin a model — mirror real user UX: whatever is loaded in
-    # LM Studio at runtime is what the agent should use.
-    env.pop("NOTEBOOK_AGENT_MODEL", None)
-    return env
+    # LM Studio at runtime is what the agent should use. If we leak a
+    # ``NOTEBOOK_AGENT_MODEL`` from the parent shell, LM Studio will
+    # JIT-load that model instead of using the one the user actually
+    # loaded.
+    "NOTEBOOK_AGENT_MODEL",
+    "NOTEBOOK_AGENT_PROVIDER",
+)
+
+
+def _apply_kernel_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure os.environ for the Papermill kernel subprocess.
+
+    The kernel inherits ``os.environ`` at spawn time. ``monkeypatch.setenv``
+    sets keys; ``monkeypatch.delenv`` removes them (and restores on
+    teardown). Both are required — just popping from a dict copy does
+    nothing, since the kernel reads ``os.environ`` directly.
+    """
+    monkeypatch.setenv("NOTEBOOK_AGENT_BASE_URL", LIVE_BASE_URL)
+    monkeypatch.setenv("NOTEBOOK_AGENT_API_KEY", LIVE_API_KEY)
+    monkeypatch.setenv("NOTEBOOK_AGENT_SESSIONS_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setenv("NOTEBOOK_AGENT_RUNS_ROOT", str(tmp_path / "runs"))
+    for var in _VARS_TO_CLEAR:
+        monkeypatch.delenv(var, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +179,7 @@ def test_papermill_user_notebook_easy_task(
     Asserts the kernel finishes both cells without raising and that the
     %task cell produces some visible output (the agent's answer).
     """
-    # Patch the env in this process — papermill kernel inherits it.
-    for k, v in _env_for_kernel(tmp_path).items():
-        monkeypatch.setenv(k, v)
+    _apply_kernel_env(tmp_path, monkeypatch)
 
     nb = _make_user_notebook(
         [
@@ -224,8 +230,7 @@ def test_papermill_user_notebook_no_client_timeout(
     truncate the LM call or to mark the run ``cancelled`` because of a
     client-side wall-clock cap.
     """
-    for k, v in _env_for_kernel(tmp_path).items():
-        monkeypatch.setenv(k, v)
+    _apply_kernel_env(tmp_path, monkeypatch)
 
     nb = _make_user_notebook(
         [
