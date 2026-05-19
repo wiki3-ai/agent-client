@@ -98,9 +98,9 @@ def init_notebook(
     request_timeout: float | None = None,
     reasoning_effort: str | None = ...,  # type: ignore[assignment]
     max_autonomous_turns: int = 6,
-    runs_root: str | Path = "runs",
+    runs_root: str | Path | None = None,
     skill_dirs: list[str | Path] | None = None,
-    sessions_root: str | Path = "sessions",
+    sessions_root: str | Path | None = None,
     use_cached_settings: bool = True,
 ) -> LiteLLMClient:
     """Apply notebook parameters → configure DSPy → stash notebook config.
@@ -129,6 +129,30 @@ def init_notebook(
         **({} if reasoning_effort is ... else {"reasoning_effort": reasoning_effort}),
     )
 
+    # Auto-discover the loaded model when the caller didn't pin one.
+    # Mirrors real user UX: open LM Studio, load a model, then run
+    # ``%task`` without telling the agent which model id to use. Only
+    # runs for ``lm_studio`` and only when the resolved model is the
+    # placeholder default (i.e. nothing was set via arg or env var).
+    import os as _os
+
+    from .litellm_client import DEFAULT_MODEL as _DEFAULT_MODEL
+
+    if (
+        client.provider == "lm_studio"
+        and model is None
+        and not _os.environ.get("NOTEBOOK_AGENT_MODEL")
+        and client.model == _DEFAULT_MODEL
+    ):
+        try:
+            from .model_settings import pick_loaded_model
+
+            loaded = pick_loaded_model(client)
+        except Exception:  # noqa: BLE001 - discovery is best-effort
+            loaded = None
+        if loaded is not None:
+            client.model = f"lm_studio/{loaded.id}"
+
     # Apply cached per-model settings (from the discovery skill) for any
     # field the caller didn't pin explicitly. Only ``reasoning_effort`` is
     # treated as cache-derived here; max_tokens / temperature stay under
@@ -142,12 +166,29 @@ def init_notebook(
 
     configure_dspy(client)
 
+    # Resolve roots: explicit arg > env var > sensible default. Honouring
+    # ``NOTEBOOK_AGENT_RUNS_ROOT`` / ``NOTEBOOK_AGENT_SESSIONS_ROOT`` lets
+    # Papermill-driven tests redirect output without modifying the user
+    # notebook.
+    import os as _os
+
+    resolved_runs = (
+        str(runs_root)
+        if runs_root is not None
+        else _os.environ.get("NOTEBOOK_AGENT_RUNS_ROOT") or "runs"
+    )
+    resolved_sessions = (
+        str(sessions_root)
+        if sessions_root is not None
+        else _os.environ.get("NOTEBOOK_AGENT_SESSIONS_ROOT") or "sessions"
+    )
+
     _NB_CONFIG = NotebookConfig(
         client=client,
         max_autonomous_turns=int(max_autonomous_turns),
-        runs_root=str(runs_root),
+        runs_root=resolved_runs,
         skill_dirs=[str(p) for p in (skill_dirs or [])],
-        sessions_root=str(sessions_root),
+        sessions_root=resolved_sessions,
     )
     return client
 

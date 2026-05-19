@@ -45,10 +45,18 @@ def test_hook_runs_discovery_when_settings_absent(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """First call: hook should invoke execute_notebook and apply the
-    discovered ``reasoning_effort`` to the live client."""
+    """First call: for ``provider=lm_studio`` the hook must write the
+    passive settings stub *without* invoking the Papermill probe.
+
+    Rationale: LM Studio's OpenAI-compat endpoint silently ignores the
+    ``reasoning_effort`` field (lmstudio-bug-tracker#988), so any probe
+    that tries to characterize the value space is meaningless and just
+    adds latency to the first ``%task`` call. The hook records that fact
+    in the canonical settings notebook and returns immediately.
+    """
     from notebook_agent import model_settings as ms_mod
     from notebook_agent import notebook_exec as nbx_mod
+    from notebook_agent.model_settings import read_settings, settings_notebook_path
 
     # Pretend LM Studio reports our model as loaded.
     monkeypatch.setattr(
@@ -56,62 +64,33 @@ def test_hook_runs_discovery_when_settings_absent(
         "pick_loaded_model",
         lambda client, prefer=None: LoadedModel(id=prefer or client.model, state="loaded"),
     )
-    # Re-bind the symbol the hook imports lazily, too.
     monkeypatch.setattr(
         "notebook_agent.model_settings.pick_loaded_model",
         lambda client, prefer=None: LoadedModel(id=prefer or client.model, state="loaded"),
     )
 
-    calls: list[dict] = []
-
-    def fake_execute_notebook(
-        skill_nb: Path,
-        *,
-        parameters: dict,
-        output_path: Path,
-        run_dir: Path,
-        **_: object,
-    ) -> Path:
-        calls.append(
-            {
-                "skill_nb": Path(skill_nb),
-                "parameters": dict(parameters),
-                "output_path": Path(output_path),
-                "run_dir": Path(run_dir),
-            }
+    def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "execute_notebook must NOT be called for lm_studio provider; "
+            "reasoning_effort is ignored upstream so probing is pointless"
         )
-        # Simulate the skill's side-effect: write the canonical settings
-        # notebook the hook will read back.
-        from notebook_agent.model_settings import settings_notebook_path
 
-        target = settings_notebook_path(
-            parameters["target_model"],
-            sessions_root=Path(parameters["sessions_root"]),
-        )
-        write_settings(target, {"reasoning_effort": "off", "supports_reasoning_effort": True})
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_text("{}")
-        return Path(output_path)
-
-    monkeypatch.setattr(nbx_mod, "execute_notebook", fake_execute_notebook)
+    monkeypatch.setattr(nbx_mod, "execute_notebook", boom)
 
     magics_mod._ensure_model_settings_discovered()
 
-    assert len(calls) == 1, "discovery skill should run exactly once"
-    call = calls[0]
-    assert call["skill_nb"].name == "skill.ipynb"
-    assert call["skill_nb"].parent.name == "discover_model_settings"
-    assert call["parameters"]["target_model"] == "lm_studio/test/gemma-stub"
-    assert call["parameters"]["base_url"] == "http://stub.invalid:1234/v1"
-    assert call["parameters"]["sessions_root"] == str(Path(nb_with_client.sessions_root))
-
-    # The hook should have applied the discovered setting to the live client.
+    # The passive stub must be written, capturing why we didn't probe.
     assert nb_with_client.client is not None
-    assert nb_with_client.client.reasoning_effort == "off"
-
-    out = capsys.readouterr().out
-    assert "Discovering settings" in out
-    assert "reasoning_effort='off'" in out
+    target = settings_notebook_path(
+        nb_with_client.client.model,
+        sessions_root=Path(nb_with_client.sessions_root),
+    )
+    assert target.exists(), f"hook did not write {target}"
+    settings = read_settings(target)
+    assert settings["supports_reasoning_effort"] is False
+    assert settings["reasoning_effort"] is None
+    assert settings["model"] == "lm_studio/test/gemma-stub"
+    assert "lmstudio-bug-tracker" in settings.get("notes", "")
 
 
 def test_hook_is_idempotent_when_settings_already_cached(

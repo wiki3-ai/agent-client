@@ -235,6 +235,11 @@ def test_task_magic_end_to_end(
     # Build an explicit notebook config (no env coupling) and stash it
     # exactly the way init_notebook would.
     client = LiteLLMClient(
+        # Use whatever model LM Studio actually has loaded; do NOT inherit
+        # ``NOTEBOOK_AGENT_MODEL`` from the env (which would otherwise
+        # force LM Studio to JIT-load a specific model and defeats the
+        # whole "test against the running setup" point).
+        model=f"lm_studio/{live_loaded_model}",
         base_url=LIVE_BASE_URL,
         api_key=LIVE_API_KEY,
         # Don't pin reasoning_effort — let discovery decide.

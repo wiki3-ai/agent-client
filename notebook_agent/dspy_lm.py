@@ -48,11 +48,6 @@ def build_dspy_lm(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] |
         api_base=client.base_url,
         api_key=client.api_key,
         temperature=client.temperature,
-        max_tokens=client.max_tokens,
-        # Hard cap on a single HTTP request. Forwarded by dspy.LM to LiteLLM
-        # so a hung provider surfaces as `lm_call_failed` instead of an
-        # 80-minute silent stall.
-        timeout=client.request_timeout,
         # dspy.LM defaults to 8 silent retries on failure. With a hung
         # thinking model that disconnects after the server's own timeout,
         # this looks like "the agent is stuck repeating the exact same
@@ -61,15 +56,24 @@ def build_dspy_lm(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] |
         num_retries=0,
         cache=False,
     )
-    if client.reasoning_effort is not None:
-        # Cap thinking-model reasoning. Without this, models like Gemma-3
-        # burn 10k+ tokens looping on intermediate scratchpad.
-        #
-        # LiteLLM gatekeeps ``reasoning_effort`` per-provider and refuses to
-        # forward it for ``lm_studio/*`` even though LM Studio happily
-        # accepts it (it's the same OpenAI-compatible chat-completions
-        # field). ``allowed_openai_params`` overrides that gate; we scope it
-        # narrowly to just this one field.
+    # Per the spec, the only enforced user-facing budgets are
+    # ``max_autonomous_turns`` and lack-of-progress detection. Forward
+    # ``max_tokens`` / ``timeout`` to LiteLLM ONLY when the caller asked
+    # for them — otherwise let the provider use its own defaults (e.g.
+    # LM Studio's ``-1`` = unlimited) so a thinking model isn't truncated
+    # or cancelled mid-stream.
+    if client.max_tokens is not None:
+        kwargs["max_tokens"] = client.max_tokens
+    if client.request_timeout is not None:
+        kwargs["timeout"] = client.request_timeout
+    # ``reasoning_effort`` handling.
+    # LM Studio ignores this field on the OpenAI-compat endpoint and always
+    # uses the per-model UI setting (bug-tracker issue #988), and sending an
+    # unsupported value (e.g. "high" for Gemma) makes it emit a noisy WARN
+    # and silently fall back. So: only forward the field for non-LM-Studio
+    # providers. To control thinking on Gemma in LM Studio, use the
+    # per-model Inference > Reasoning settings in the UI.
+    if client.reasoning_effort is not None and client.provider != "lm_studio":
         kwargs["reasoning_effort"] = client.reasoning_effort
         kwargs["allowed_openai_params"] = ["reasoning_effort"]
     return dspy.LM(**kwargs)

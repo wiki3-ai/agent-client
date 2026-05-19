@@ -12,7 +12,7 @@
 		// via host.docker.internal (mapped above for Linux/Docker hosts; native
 		// on Docker Desktop for Mac).
 		"NOTEBOOK_AGENT_PROVIDER": "lm_studio",
-		"NOTEBOOK_AGENT_MODEL": "lm_studio/google/gemma-4-31b",
+		"NOTEBOOK_AGENT_MODEL": "lm_studio/qwen/qwen3-coder-next",
 		"NOTEBOOK_AGENT_BASE_URL": "http://host.docker.internal:1234/v1",
 		// LM Studio ignores the key but litellm/openai client requires one.
 		"OPENAI_API_KEY": "lm-studio",

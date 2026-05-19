@@ -29,25 +29,26 @@ DEFAULT_REASONING_EFFORT_ENV = "NOTEBOOK_AGENT_REASONING_EFFORT"
 DEFAULT_MODEL = "lm_studio/model-name"
 DEFAULT_BASE_URL = "http://host.docker.internal:1234/v1"
 DEFAULT_API_KEY = "lm-studio"
-# Generous default for modern reasoning/thinking models. Chain-of-thought
-# can easily consume 4-8k tokens before the final answer is emitted.
-DEFAULT_MAX_TOKENS = 16384
+# ``None`` = no cap. Per the spec, the only enforced budget is
+# ``max_autonomous_turns`` plus lack-of-progress detection. Hard token caps
+# truncate thinking-model outputs mid-stream and trigger spurious failures
+# rather than letting the agent report back.
+DEFAULT_MAX_TOKENS: int | None = None
 DEFAULT_TEMPERATURE = 0.0
-# Hard wall-clock cap on a single LM HTTP request. Without this LiteLLM/httpx
-# can wait indefinitely on a hung provider, which manifests as the agent
-# "running with no progress" for many minutes. 300s is generous for a
-# 16k-token thinking model and short enough to surface a real failure.
-DEFAULT_REQUEST_TIMEOUT = 300.0
-# Default ``reasoning_effort``. The value space is **model-specific**:
-#   - OpenAI / Anthropic: ``low`` | ``medium`` | ``high``
-#   - LM Studio Gemma-3: ``on`` | ``off`` (sending ``low`` silently falls back
-#     to ``on``, i.e. unbounded reasoning — worse than not sending the field)
-#   - Many local models: ignored, or rejected as an unsupported param
-# Because there is no portable way to enumerate the supported values from
-# the server, the default is ``None`` (don't send the field). Per-model
-# correct values are expected to be discovered by the agent's own
-# Retrieve→Compose→Transform→Generate loop and persisted in the session's
-# ``AGENT.md`` / model-config cache.
+# ``None`` = no client-side cancel. Thinking models can legitimately take
+# several minutes; client-side timeouts caused exactly the "5-minute hang"
+# the user reported (LM Studio kept generating, we disconnected, the agent
+# got nothing). The agent's progress detector decides when to bail.
+DEFAULT_REQUEST_TIMEOUT: float | None = None
+# Default ``reasoning_effort``. Note that LM Studio currently **ignores**
+# this field on the OpenAI-compat ``/v1/chat/completions`` endpoint
+# (bug-tracker issue #988) — it always uses the value configured in the
+# LM Studio UI under the per-model Inference settings. Sending it anyway
+# can also trigger the warning ``Reasoning setting '<x>' is not supported
+# by model '<y>'. Falling back to ...`` for Gemma. Default to ``None``
+# (don't send the field) and let the user control reasoning behaviour
+# inside LM Studio. Hosted providers (OpenAI/Anthropic) can opt in by
+# passing ``reasoning_effort="low"`` explicitly.
 DEFAULT_REASONING_EFFORT: str | None = None
 
 
@@ -64,10 +65,10 @@ class LiteLLMClient:
     model: str = DEFAULT_MODEL
     base_url: str = DEFAULT_BASE_URL
     api_key: str = DEFAULT_API_KEY
-    max_tokens: int = DEFAULT_MAX_TOKENS
+    max_tokens: int | None = DEFAULT_MAX_TOKENS
     temperature: float = DEFAULT_TEMPERATURE
-    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
-    reasoning_effort: str | None = "low"
+    request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT
+    reasoning_effort: str | None = None
     lm_calls_log: Path | None = None
     # For the "fake" provider, ``fake_answers`` is a list of dicts mapping
     # signature output-field names to canned values, as ``DummyLM`` consumes.
@@ -99,13 +100,13 @@ class LiteLLMClient:
         self.model = model or os.environ.get(DEFAULT_MODEL_ENV) or DEFAULT_MODEL
         self.base_url = base_url or os.environ.get(DEFAULT_BASE_URL_ENV) or DEFAULT_BASE_URL
         self.api_key = api_key or os.environ.get(DEFAULT_API_KEY_ENV) or DEFAULT_API_KEY
-        self.max_tokens = _coerce_int(
+        self.max_tokens = _coerce_optional_int(
             max_tokens, os.environ.get(DEFAULT_MAX_TOKENS_ENV), DEFAULT_MAX_TOKENS
         )
         self.temperature = _coerce_float(
             temperature, os.environ.get(DEFAULT_TEMPERATURE_ENV), DEFAULT_TEMPERATURE
         )
-        self.request_timeout = _coerce_float(
+        self.request_timeout = _coerce_optional_float(
             request_timeout,
             os.environ.get(DEFAULT_REQUEST_TIMEOUT_ENV),
             DEFAULT_REQUEST_TIMEOUT,
@@ -153,10 +154,42 @@ def _coerce_int(explicit: int | None, env_val: str | None, default: int) -> int:
     return default
 
 
+def _coerce_optional_int(
+    explicit: int | None, env_val: str | None, default: int | None
+) -> int | None:
+    if explicit is not None:
+        return int(explicit)
+    if env_val:
+        s = env_val.strip().lower()
+        if s in {"", "none", "null"}:
+            return None
+        try:
+            return int(env_val)
+        except ValueError:
+            pass
+    return default
+
+
 def _coerce_float(explicit: float | None, env_val: str | None, default: float) -> float:
     if explicit is not None:
         return float(explicit)
     if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    return default
+
+
+def _coerce_optional_float(
+    explicit: float | None, env_val: str | None, default: float | None
+) -> float | None:
+    if explicit is not None:
+        return float(explicit)
+    if env_val:
+        s = env_val.strip().lower()
+        if s in {"", "none", "null"}:
+            return None
         try:
             return float(env_val)
         except ValueError:

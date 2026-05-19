@@ -118,17 +118,25 @@ def _llm_from_overrides(overrides: dict[str, Any]) -> LiteLLMClient | None:
 
 
 def _ensure_model_settings_discovered() -> None:
-    """Run the discovery skill the first time we see a new model.
+    """Record a passive fingerprint of the configured LM (one-time per model).
 
-    Looks up ``sessions/<model-slug>/model_settings.ipynb`` for the
-    currently-configured model; if absent, executes the bundled
-    ``core.discover_model_settings`` skill notebook via Papermill. Probes
-    use raw HTTP (no ``dspy.LM``) so this works *before* the agent has
-    good LM settings — which is exactly the bootstrap case it solves.
+    Historically this probed several ``reasoning_effort`` values to pick
+    the fastest one. That premise was wrong for LM Studio: the
+    OpenAI-compat ``/v1/chat/completions`` endpoint **silently ignores**
+    ``reasoning_effort`` (see
+    https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/988). The
+    model always uses the value configured in the LM Studio UI under the
+    per-model Inference settings. Probing values from the client side
+    cannot influence the model and just adds a 30-60s stall to the
+    first ``%task`` call.
+
+    For ``provider="lm_studio"`` we now write a passive note recording
+    that fact and return immediately. Hosted providers
+    (``openai``/``anthropic``) still get the previous discovery skill
+    behaviour for the rare case where it's actually useful.
 
     Failures are non-fatal: a warning is printed and the original LM
-    settings (whatever the user had) are kept. Pulling new model online
-    shouldn't break ``%task``.
+    settings (whatever the user had) are kept.
     """
     from pathlib import Path
 
@@ -136,6 +144,7 @@ def _ensure_model_settings_discovered() -> None:
         pick_loaded_model,
         read_settings,
         settings_notebook_path,
+        write_settings,
     )
     from .notebook_exec import execute_notebook
 
@@ -158,6 +167,28 @@ def _ensure_model_settings_discovered() -> None:
     settings_path = settings_notebook_path(target_model, sessions_root=sessions_root)
     if read_settings(settings_path):
         return  # already discovered
+
+    # LM Studio: skip the probe; the parameter is ignored upstream.
+    if client.provider == "lm_studio":
+        write_settings(
+            settings_path,
+            {
+                "model": target_model,
+                "base_url": client.base_url,
+                "provider": "lm_studio",
+                "reasoning_effort": None,
+                "supports_reasoning_effort": False,
+                "notes": (
+                    "LM Studio's OpenAI-compat /v1/chat/completions endpoint "
+                    "ignores reasoning_effort; the value is always read from "
+                    "the LM Studio UI (My Models > Inference > Reasoning). "
+                    "See https://github.com/lmstudio-ai/lmstudio-bug-tracker/"
+                    "issues/988 and #1743. To toggle thinking on Gemma-4, "
+                    "use that UI."
+                ),
+            },
+        )
+        return
 
     print(f"Discovering settings for {target_model!r} \u2026 (one-time per model)")
 
