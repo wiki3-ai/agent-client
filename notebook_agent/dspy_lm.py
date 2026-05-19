@@ -43,14 +43,23 @@ def build_dspy_lm(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] |
     model = client.model
     if "/" not in model:
         model = f"openai/{model}"
-    return dspy.LM(
+    kwargs: dict[str, Any] = dict(
         model=model,
         api_base=client.base_url,
         api_key=client.api_key,
         temperature=client.temperature,
         max_tokens=client.max_tokens,
+        # Hard cap on a single HTTP request. Forwarded by dspy.LM to LiteLLM
+        # so a hung provider surfaces as `lm_call_failed` instead of an
+        # 80-minute silent stall.
+        timeout=client.request_timeout,
         cache=False,
     )
+    if client.reasoning_effort is not None:
+        # Cap thinking-model reasoning. Without this, models like Gemma-3
+        # burn 10k+ tokens looping on intermediate scratchpad.
+        kwargs["reasoning_effort"] = client.reasoning_effort
+    return dspy.LM(**kwargs)
 
 
 def configure_dspy(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] | None = None) -> Any:

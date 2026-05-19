@@ -23,6 +23,8 @@ DEFAULT_API_KEY_ENV = "NOTEBOOK_AGENT_API_KEY"
 DEFAULT_PROVIDER_ENV = "NOTEBOOK_AGENT_PROVIDER"
 DEFAULT_MAX_TOKENS_ENV = "NOTEBOOK_AGENT_MAX_TOKENS"
 DEFAULT_TEMPERATURE_ENV = "NOTEBOOK_AGENT_TEMPERATURE"
+DEFAULT_REQUEST_TIMEOUT_ENV = "NOTEBOOK_AGENT_REQUEST_TIMEOUT"
+DEFAULT_REASONING_EFFORT_ENV = "NOTEBOOK_AGENT_REASONING_EFFORT"
 
 DEFAULT_MODEL = "lm_studio/model-name"
 DEFAULT_BASE_URL = "http://host.docker.internal:1234/v1"
@@ -31,6 +33,16 @@ DEFAULT_API_KEY = "lm-studio"
 # can easily consume 4-8k tokens before the final answer is emitted.
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_TEMPERATURE = 0.0
+# Hard wall-clock cap on a single LM HTTP request. Without this LiteLLM/httpx
+# can wait indefinitely on a hung provider, which manifests as the agent
+# "running with no progress" for many minutes. 300s is generous for a
+# 16k-token thinking model and short enough to surface a real failure.
+DEFAULT_REQUEST_TIMEOUT = 300.0
+# Default ``reasoning_effort`` for thinking models. Empirically, Gemma-3 /
+# similar reasoning models will burn 10k+ tokens looping on trivia when left
+# on the default; ``"low"`` keeps responses bounded. ``None`` means
+# "don't send the field" so providers that don't understand it aren't
+# disturbed.
 
 
 @dataclass
@@ -48,6 +60,8 @@ class LiteLLMClient:
     api_key: str = DEFAULT_API_KEY
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = DEFAULT_TEMPERATURE
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    reasoning_effort: str | None = "low"
     lm_calls_log: Path | None = None
     # For the "fake" provider, ``fake_answers`` is a list of dicts mapping
     # signature output-field names to canned values, as ``DummyLM`` consumes.
@@ -67,6 +81,8 @@ class LiteLLMClient:
         api_key: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        request_timeout: float | None = None,
+        reasoning_effort: str | None = ...,  # type: ignore[assignment]
         lm_calls_log: Path | str | None = None,
         fake_answers: list[dict[str, Any]] | None = None,
         fake_response: str | None = None,
@@ -83,6 +99,21 @@ class LiteLLMClient:
         self.temperature = _coerce_float(
             temperature, os.environ.get(DEFAULT_TEMPERATURE_ENV), DEFAULT_TEMPERATURE
         )
+        self.request_timeout = _coerce_float(
+            request_timeout,
+            os.environ.get(DEFAULT_REQUEST_TIMEOUT_ENV),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        # ``reasoning_effort=...`` (Ellipsis) means "caller did not pass it";
+        # in that case fall back to the env var, then to "low". An explicit
+        # ``None`` from the caller disables the field entirely.
+        if reasoning_effort is ...:
+            env_re = os.environ.get(DEFAULT_REASONING_EFFORT_ENV)
+            self.reasoning_effort = env_re if env_re else "low"
+        else:
+            self.reasoning_effort = reasoning_effort  # type: ignore[assignment]
+        if isinstance(self.reasoning_effort, str) and self.reasoning_effort.lower() in {"none", ""}:
+            self.reasoning_effort = None
         self.lm_calls_log = Path(lm_calls_log) if lm_calls_log else None
         self.fake_answers = fake_answers
         self.fake_response = fake_response
@@ -98,6 +129,8 @@ class LiteLLMClient:
             "base_url": self.base_url,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "request_timeout": self.request_timeout,
+            "reasoning_effort": self.reasoning_effort,
             # api_key is intentionally omitted.
             "lm_calls_log": str(self.lm_calls_log) if self.lm_calls_log else None,
         }
@@ -145,7 +178,9 @@ __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_MODEL",
+    "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_TEMPERATURE",
     "LiteLLMClient",
     "write_lm_call_log",
 ]
+

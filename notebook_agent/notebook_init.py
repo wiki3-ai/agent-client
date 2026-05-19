@@ -54,6 +54,7 @@ from typing import Any
 from .dspy_lm import configure_dspy
 from .litellm_client import (
     DEFAULT_MAX_TOKENS,
+    DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_TEMPERATURE,
     LiteLLMClient,
 )
@@ -93,6 +94,8 @@ def init_notebook(
     api_key: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    request_timeout: float | None = None,
+    reasoning_effort: str | None = ...,  # type: ignore[assignment]
     max_autonomous_turns: int = 6,
     runs_root: str | Path = "runs",
     skill_dirs: list[str | Path] | None = None,
@@ -113,6 +116,8 @@ def init_notebook(
         api_key=api_key,
         max_tokens=max_tokens,
         temperature=temperature,
+        request_timeout=request_timeout,
+        **({} if reasoning_effort is ... else {"reasoning_effort": reasoning_effort}),
     )
     configure_dspy(client)
 
@@ -148,6 +153,21 @@ def notebook_parameters() -> list[dict[str, Any]]:
             "min": 0.0,
             "max": 2.0,
             "description": "LM sampling temperature.",
+        },
+        {
+            "name": "request_timeout",
+            "type": "float",
+            "default": DEFAULT_REQUEST_TIMEOUT,
+            "min": 30.0,
+            "max": 1800.0,
+            "description": "Hard wall-clock cap on a single LM HTTP request (seconds).",
+        },
+        {
+            "name": "reasoning_effort",
+            "type": "str",
+            "default": "low",
+            "choices": ["low", "medium", "high", None],
+            "description": "Cap on thinking-model reasoning tokens. 'low' avoids 10k-token scratchpad loops.",
         },
         {
             "name": "max_autonomous_turns",

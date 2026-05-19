@@ -13,10 +13,11 @@ unreachable, the task fails with a clear error.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import dspy  # type: ignore[import-untyped]
 import nbformat
@@ -222,6 +223,39 @@ def _last_balanced_object(text: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _run_lm_step(
+    log,
+    step: str,
+    fn: Callable[[], Any],
+    **extra: Any,
+) -> Any:
+    """Run a DSPy LM-backed call with start/finish events for live progress.
+
+    Emits ``lm_call_started`` immediately, then ``lm_call_finished`` with
+    elapsed seconds (and the same ``step`` tag) — or ``lm_call_failed`` if
+    the call raises. Re-raises any exception. This is the hook the ``%task``
+    magic uses to show "calling LM (plan)…" with a running timer instead of
+    appearing to hang.
+    """
+    log.append("lm_call_started", step=step, **extra)
+    t0 = time.monotonic()
+    try:
+        result = fn()
+    except Exception as exc:  # noqa: BLE001
+        elapsed = round(time.monotonic() - t0, 3)
+        log.append(
+            "lm_call_failed",
+            step=step,
+            elapsed_s=elapsed,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+    elapsed = round(time.monotonic() - t0, 3)
+    log.append("lm_call_finished", step=step, elapsed_s=elapsed)
+    return result
+
+
 def run_task(
     request: str,
     *,
@@ -299,7 +333,7 @@ def run_task(
                            error=error, plan=[], turns_used=0)
     tracker.spend("autonomous_turns", 1)
     try:
-        plan = program.plan(request)
+        plan = _run_lm_step(log, "plan", lambda: program.plan(request))
     except Exception as exc:  # noqa: BLE001
         err = {"type": type(exc).__name__, "message": str(exc)}
         _finalize(task, manifest, decision, tracker, success=False, error=err, log=log, plan=[])
@@ -313,7 +347,6 @@ def run_task(
     if not plan:
         plan = [t.title for t in decompose_request(request)]
     log.append("plan_created", plan=plan)
-    (task.inputs_dir / "todo.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
 
     # ----- Choose skill (DSPy skill_chooser). -----
     catalog_records = repo.catalog()
@@ -325,7 +358,11 @@ def run_task(
         else:
             tracker.spend("autonomous_turns", 1)
             try:
-                chosen_id = program.choose_skill(request, json.dumps(catalog_records))
+                chosen_id = _run_lm_step(
+                    log, "choose_skill",
+                    lambda: program.choose_skill(request, json.dumps(catalog_records)),
+                    catalog_size=len(catalog_records),
+                )
             except Exception as exc:  # noqa: BLE001
                 decision.record("retrieve", attempted=True, result=f"chooser failed: {exc!s}")
                 chosen_id = "none"
@@ -369,7 +406,10 @@ def run_task(
         tracker.spend("autonomous_turns", 1)
         try:
             log.append("generation_started")
-            source = program.generate_code(request, plan)
+            source = _run_lm_step(
+                log, "generate_code",
+                lambda: program.generate_code(request, plan),
+            )
             validate_snippet(source)
             generated_code = GeneratedCode(source=source, request=request, plan=list(plan))
             log.append("generation_finished", source_chars=len(source))
@@ -398,8 +438,12 @@ def run_task(
             else:
                 tracker.spend("autonomous_turns", 1)
                 try:
-                    raw = program.extract_parameters(
-                        request, schema_text, current_date=date.today().isoformat(),
+                    raw = _run_lm_step(
+                        log, "extract_parameters",
+                        lambda: program.extract_parameters(
+                            request, schema_text, current_date=date.today().isoformat(),
+                        ),
+                        skill_id=chosen_skill.skill_id,
                     )
                     inferred = _parse_extracted_params(raw, schema_props)
                 except Exception as exc:  # noqa: BLE001

@@ -1,12 +1,52 @@
-"""Append-only JSONL event log (Section 9 of the spec)."""
+"""Append-only JSONL event log (Section 9 of the spec).
+
+In addition to the on-disk JSONL stream, this module exposes a tiny
+process-local **subscription bus**: callers (the IPython magic, tests,
+external observers) can register listeners via :func:`subscribe` and
+receive every event the moment it is appended. This is the mechanism the
+``%task`` magic uses to stream live progress into the user's notebook
+output cell — without it, a long LM call looks like a hang.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ._clock import iso_now
+
+# ---- process-local event subscription bus ----
+
+EventListener = Callable[[dict[str, Any]], None]
+_LISTENERS: list[EventListener] = []
+
+
+def subscribe(fn: EventListener) -> EventListener:
+    """Register a listener for every event appended to any :class:`EventLog`.
+
+    Returns the same callable so it can be used as a decorator.
+    """
+    if fn not in _LISTENERS:
+        _LISTENERS.append(fn)
+    return fn
+
+
+def unsubscribe(fn: EventListener) -> None:
+    """Remove a previously-registered listener. Silently ignores unknown."""
+    try:
+        _LISTENERS.remove(fn)
+    except ValueError:
+        pass
+
+
+def _broadcast(event: dict[str, Any]) -> None:
+    # Defensive: listener errors must never break the writer.
+    for fn in list(_LISTENERS):
+        try:
+            fn(event)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class EventLog:
@@ -29,6 +69,7 @@ class EventLog:
         payload.update(fields)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, default=_json_default) + "\n")
+        _broadcast(payload)
         return payload
 
     def read(self) -> list[dict[str, Any]]:

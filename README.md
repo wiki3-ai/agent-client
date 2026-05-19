@@ -118,6 +118,34 @@ Both flags also work with `%%task`. Defaults come from
 (0.0); the override is scoped to the single magic invocation and
 does not mutate the notebook-wide DSPy config.
 
+### Live progress in the user's notebook
+
+Every `%task` / `%%task` invocation installs a
+[`ProgressRenderer`](notebook_agent/progress.py) that subscribes to the
+in-process event bus and streams human-readable status into the cell's
+output area, in place, as the agent works. You will see lines like:
+
+```text
+[  0.2s] Task created — `task_…`
+[  0.4s] Calling LM (plan)…
+[  6.1s] LM (plan) returned in 5.7s.
+[  6.2s] Plan:
+  1. Determine the date of Easter Sunday in 2072
+  2. Calculate Ash Wednesday (46 days before Easter)
+  3. Identify Mardi Gras as the day preceding Ash Wednesday
+  4. Provide the final date to the user
+[  6.3s] Searching skills (2 candidates)…
+[ 11.5s] Chosen skill: `None` — will generate.
+[ 11.6s] Calling LM (generate_code)…
+```
+
+While an LM call is in flight the header shows `_waiting on LM (step) —
+12.3s_` with a once-per-second pulse, so a long thinking-model response
+no longer looks like a frozen kernel. Every LM call is bracketed by
+`lm_call_started` / `lm_call_finished` / `lm_call_failed` events in
+`logs/events.jsonl`, so the same trace is available off-line for
+debugging or DSPy GEPA scoring.
+
 ### Notebook initialization (Papermill parameters + DSPy GEPA surface)
 
 The bare minimum for a user notebook is now just:
@@ -177,17 +205,29 @@ This produces a run directory like:
 
 ```text
 runs/2026/05/18/093015-use-the-echo-skill-...
-├── task.json
-├── manifest.json
-├── README.md
-├── task.ipynb
-├── executed.ipynb
-├── inputs/{request.md,parameters.json}
-├── outputs/{result.json,answer.md}
-├── logs/{events.jsonl,stdout.log,stderr.log,lm_calls.jsonl}
-├── artifacts/
-└── children/
+├── task.json           # intent
+├── manifest.json       # what actually happened (status, stage, plan, budget)
+├── README.md           # human summary (auto-generated)
+├── task.ipynb          # the parameterized notebook the agent built/picked
+├── executed.ipynb      # Papermill output — durable run record (canonical)
+├── inputs/{request.md, parameters.json}
+├── outputs/{result.json, answer.md}
+├── logs/events.jsonl   # append-only event stream (LM calls, plan, execution)
+├── artifacts/          # additional files the run produced
+└── children/           # subtasks (recursive)
 ```
+
+The canonical run record is `executed.ipynb` — its `notebook_agent`
+metadata holds the plan, stage decision, result, error, and turn count
+for continuation. The sidecar files mirror the spec's filesystem
+contract.
+
+### Built-in skills
+
+| Skill ID | Purpose |
+|---|---|
+| `core.echo` | Echo input through the full pipeline; used in tests. |
+| `core.model_config` | Look up the configured model's real defaults from the provider (LM Studio `/api/v0/models/{id}`); writes context window + `recommended_max_tokens` into `outputs/result.json`. |
 
 ## Public API
 
@@ -196,30 +236,48 @@ Everything a user needs lives at the package top level:
 | Function / class | Purpose |
 |---|---|
 | `run_task(request, *, parameters=…, runs_root=…, budget=…, llm=…)` | Run a task end-to-end (Retrieve → Compose → Transform → Generate). |
+| `init_notebook(...)` / `%agent_init` | Build a `LiteLLMClient`, configure `dspy.settings.lm`, and stash notebook-wide defaults. Auto-invoked by `%load_ext notebook_agent`. |
+| `notebook_parameters()` | Returns the optimizable hyperparameter schema (the DSPy GEPA search space). |
+| `model_info(client_or_base_url, model)` | Look up provider-reported defaults for a model (context window, `recommended_max_tokens`, family/arch). |
 | `search_skills(query, *, top=10)` | Lexical search over built-in + user skills. |
 | `TaskGraph.load(directory)` | Reload an existing run as a task graph. |
-| `Task`, `Budget`, `BudgetTracker` | Data types describing a task and its budget. |
+| `Task`, `Budget`, `BudgetTracker`, `NotebookConfig` | Data types describing a task, its budget, and the notebook-level config. |
 | `show_task` / `show_answer` / `show_manifest` / `show_result` / `show_events` / `show_graph` / `show_notebook` | IPython display helpers for inline rendering. |
+| `%task` / `%%task` / `%agent_init` | IPython magics — the canonical user UX. |
 
 ## Architecture summary
 
 - **`task_graph`** owns the on-disk task layout (spec §7–§9).
-- **`events`** is append-only JSONL.
+- **`events`** is append-only JSONL **plus** a process-local subscription
+  bus (`subscribe`/`unsubscribe`) — every event is fan-out to in-process
+  listeners the moment it's written.
+- **`progress`** is the listener the `%task` magic installs: streams
+  `plan_created`, `lm_call_started`/`_finished`/`_failed`,
+  `notebook_execution_*`, etc. into a single updatable IPython display.
+- **`magics`** registers `%task`, `%%task`, `%agent_init`. Auto-runs
+  `init_notebook()` on `%load_ext notebook_agent` so a bare notebook works.
+- **`notebook_init`** holds `NotebookConfig`, `init_notebook(...)`, and the
+  GEPA hyperparameter schema via `notebook_parameters()`.
+- **`model_info`** probes the provider (LM Studio `/api/v0/models/{id}`
+  first, OpenAI `/v1/models` fallback) for real per-model defaults.
 - **`budget`** tracks `notebook_executions`, `lm_calls`, `repair_attempts`,
   `wall_time_seconds`, etc., and raises `BudgetExhaustedError` *before*
   expensive work happens.
 - **`notebook_exec`** runs notebooks via Papermill, captures cell streams
   and errors, and integrates with the budget tracker and event log.
-- **`skills`** is a lexical search over `manifest.json` + `SKILL.md` files
-  under `builtin_skills/` (shipped) and any user-supplied directories.
-- **`transform`** turns a `SKILL.md` into a parameterized notebook with the
-  standard spec §12 cells (parameters / setup / validate / execute /
-  write_result / manifest_update / smoke).
+- **`skills`** is a lexical search over `manifest.json` (+ optional legacy
+  `SKILL.md`) under `builtin_skills/` and any user-supplied directories.
+  New skills are notebook-canonical: documentation lives in markdown cells
+  of `skill.ipynb`, not in a separate `SKILL.md`.
+- **`transform`** turns a legacy `SKILL.md` into a parameterized notebook
+  (parameters / setup / validate / execute / write_result / manifest_update
+  / smoke).
 - **`repair`** classifies common failure modes and applies a deterministic
   patch. LLM-assisted repair is available when a configured `LiteLLMClient`
   is supplied.
-- **`agent.run_task`** orchestrates R→C→T→G end-to-end, calls repair on
-  failure and writes `outputs/answer.md`.
+- **`agent.run_task`** orchestrates R→C→T→G end-to-end, brackets every LM
+  call with `lm_call_started`/`_finished`/`_failed` events (with elapsed
+  seconds), calls repair on failure and writes `outputs/answer.md`.
 - **`display`** offers IPython-friendly helpers for inline rendering of
   tasks, manifests, event logs, and the task graph.
 - **`mcp_server`** exposes the agent over MCP for **other agents**
@@ -268,7 +326,7 @@ NOTEBOOK_AGENT_LIVE_LM=1 pytest -m live   # exercises real LM Studio
 ruff check notebook_agent tests
 ```
 
-37 tests pass (1 live test is skipped unless LM Studio is reachable).
+46 tests pass; live LM tests skip unless `NOTEBOOK_AGENT_LIVE_LM=1`.
 
 ## Environment variables
 

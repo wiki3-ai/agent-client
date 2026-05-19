@@ -36,6 +36,7 @@ from .agent import AgentResult, run_task
 from .dspy_lm import using_client
 from .litellm_client import LiteLLMClient
 from .notebook_init import get_notebook_config, init_notebook
+from .progress import ProgressRenderer
 
 
 def _render(result: AgentResult) -> Any:
@@ -97,6 +98,13 @@ def _parse_line(line: str) -> tuple[bool, dict[str, Any], str]:
                 continue
             except ValueError:
                 break
+        if tok in {"--timeout", "--request-timeout", "--request_timeout"} and i + 1 < len(tokens):
+            try:
+                overrides["request_timeout"] = float(tokens[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                break
         # First non-flag token: the rest of the line is the prompt.
         break
     prompt = " ".join(tokens[i:]).strip()
@@ -121,13 +129,14 @@ def _run_with_overrides(prompt: str, *, cf: AgentResult | None, overrides: dict[
         common["skill_dirs"] = list(nb.skill_dirs)
 
     client = _llm_from_overrides(overrides)
-    if client is None:
-        # Use whatever notebook-level client (if any) is already configured
-        # on dspy.settings.lm via init_notebook().
-        return run_task(prompt, **common)
-    # Temporarily switch DSPy's LM, then restore so the override is per-call.
-    with using_client(client):
-        return run_task(prompt, llm=client, **common)
+    with ProgressRenderer():
+        if client is None:
+            # Use whatever notebook-level client (if any) is already configured
+            # on dspy.settings.lm via init_notebook().
+            return run_task(prompt, **common)
+        # Temporarily switch DSPy's LM, then restore so the override is per-call.
+        with using_client(client):
+            return run_task(prompt, llm=client, **common)
 
 
 def task_line_magic(line: str, *, ip: Any | None = None) -> Any:
@@ -215,7 +224,7 @@ def agent_init_magic(line: str) -> Any:
 
 _INIT_KWARGS = {
     "provider", "model", "base_url", "api_key",
-    "max_tokens", "temperature",
+    "max_tokens", "temperature", "request_timeout", "reasoning_effort",
     "max_autonomous_turns", "runs_root", "skill_dirs",
 }
 
