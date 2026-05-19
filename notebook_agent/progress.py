@@ -97,6 +97,7 @@ class ProgressRenderer:
         self._last_step_t0: float | None = None
         self._stop_pulse = threading.Event()
         self._pulse_thread: threading.Thread | None = None
+        self._printed_count = 0
 
     # ----- context manager -----
 
@@ -148,7 +149,7 @@ class ProgressRenderer:
             elif name in {"lm_call_finished", "lm_call_failed"}:
                 self._last_step = None
                 self._last_step_t0 = None
-        self._refresh()
+        self._refresh(on_event=True)
 
     def _pulse_loop(self) -> None:
         # Update once a second while an LM call is in flight so the user sees
@@ -157,7 +158,7 @@ class ProgressRenderer:
             with self._lock:
                 in_flight = self._last_step is not None
             if in_flight:
-                self._refresh()
+                self._refresh(on_event=False)
 
     # ----- rendering -----
 
@@ -180,11 +181,17 @@ class ProgressRenderer:
             header += f"  — _waiting on LM ({in_flight}) — {waited}s_"
         return f"{header}\n\n```text\n{body}\n```"
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, on_event: bool = True) -> None:
         if self._fallback_print:
+            # In print-fallback mode, only emit lines we haven't printed yet.
+            # Pulse ticks must not re-print the in-flight line.
+            if not on_event:
+                return
             with self._lock:
-                if self._lines:
-                    print(self._lines[-1], flush=True)
+                pending = self._lines[self._printed_count :]
+                self._printed_count = len(self._lines)
+            for line in pending:
+                print(line, flush=True)
             return
         if self._handle is None:
             return

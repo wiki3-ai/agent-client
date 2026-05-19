@@ -38,11 +38,17 @@ DEFAULT_TEMPERATURE = 0.0
 # "running with no progress" for many minutes. 300s is generous for a
 # 16k-token thinking model and short enough to surface a real failure.
 DEFAULT_REQUEST_TIMEOUT = 300.0
-# Default ``reasoning_effort`` for thinking models. Empirically, Gemma-3 /
-# similar reasoning models will burn 10k+ tokens looping on trivia when left
-# on the default; ``"low"`` keeps responses bounded. ``None`` means
-# "don't send the field" so providers that don't understand it aren't
-# disturbed.
+# Default ``reasoning_effort``. The value space is **model-specific**:
+#   - OpenAI / Anthropic: ``low`` | ``medium`` | ``high``
+#   - LM Studio Gemma-3: ``on`` | ``off`` (sending ``low`` silently falls back
+#     to ``on``, i.e. unbounded reasoning — worse than not sending the field)
+#   - Many local models: ignored, or rejected as an unsupported param
+# Because there is no portable way to enumerate the supported values from
+# the server, the default is ``None`` (don't send the field). Per-model
+# correct values are expected to be discovered by the agent's own
+# Retrieve→Compose→Transform→Generate loop and persisted in the session's
+# ``AGENT.md`` / model-config cache.
+DEFAULT_REASONING_EFFORT: str | None = None
 
 
 @dataclass
@@ -109,7 +115,7 @@ class LiteLLMClient:
         # ``None`` from the caller disables the field entirely.
         if reasoning_effort is ...:
             env_re = os.environ.get(DEFAULT_REASONING_EFFORT_ENV)
-            self.reasoning_effort = env_re if env_re else "low"
+            self.reasoning_effort = env_re if env_re else DEFAULT_REASONING_EFFORT
         else:
             self.reasoning_effort = reasoning_effort  # type: ignore[assignment]
         if isinstance(self.reasoning_effort, str) and self.reasoning_effort.lower() in {"none", ""}:

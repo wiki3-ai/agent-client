@@ -33,7 +33,7 @@ import shlex
 from typing import Any
 
 from .agent import AgentResult, run_task
-from .dspy_lm import using_client
+from .dspy_lm import configure_dspy, using_client
 from .litellm_client import LiteLLMClient
 from .notebook_init import get_notebook_config, init_notebook
 from .progress import ProgressRenderer
@@ -117,8 +117,90 @@ def _llm_from_overrides(overrides: dict[str, Any]) -> LiteLLMClient | None:
     return LiteLLMClient(**overrides)
 
 
+def _ensure_model_settings_discovered() -> None:
+    """Run the discovery skill the first time we see a new model.
+
+    Looks up ``sessions/<model-slug>/model_settings.ipynb`` for the
+    currently-configured model; if absent, executes the bundled
+    ``core.discover_model_settings`` skill notebook via Papermill. Probes
+    use raw HTTP (no ``dspy.LM``) so this works *before* the agent has
+    good LM settings — which is exactly the bootstrap case it solves.
+
+    Failures are non-fatal: a warning is printed and the original LM
+    settings (whatever the user had) are kept. Pulling new model online
+    shouldn't break ``%task``.
+    """
+    from pathlib import Path
+
+    from .model_settings import (
+        pick_loaded_model,
+        read_settings,
+        settings_notebook_path,
+    )
+    from .notebook_exec import execute_notebook
+
+    nb = get_notebook_config()
+    client = nb.client
+    if client is None:
+        return
+    sessions_root = Path(nb.sessions_root)
+
+    # Detect what's actually loaded; prefer the configured model so we
+    # cache under the id the user thinks they're talking to.
+    try:
+        loaded = pick_loaded_model(client, prefer=client.model)
+    except Exception:
+        loaded = None
+    target_model = (loaded.id if loaded else None) or client.model
+    if not target_model:
+        return
+
+    settings_path = settings_notebook_path(target_model, sessions_root=sessions_root)
+    if read_settings(settings_path):
+        return  # already discovered
+
+    print(f"Discovering settings for {target_model!r} \u2026 (one-time per model)")
+
+    skill_dir = Path(__file__).parent / "builtin_skills" / "discover_model_settings"
+    skill_nb = skill_dir / "skill.ipynb"
+    if not skill_nb.exists():
+        print(f"  (discovery skill missing at {skill_nb}; skipping)")
+        return
+
+    # Run the probe under sessions/<slug>/_discovery/ so the executed
+    # notebook + logs are kept alongside the settings file.
+    work = sessions_root / settings_path.parent.name / "_discovery"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        execute_notebook(
+            skill_nb,
+            parameters={
+                "target_model": target_model,
+                "base_url": client.base_url,
+                "api_key": client.api_key,
+                "sessions_root": str(sessions_root),
+            },
+            output_path=work / "executed.ipynb",
+            run_dir=work,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  discovery failed: {type(exc).__name__}: {exc}")
+        return
+
+    # Pick up the recommended settings and re-configure DSPy.
+    discovered = read_settings(settings_path)
+    if "reasoning_effort" in discovered:
+        client.reasoning_effort = discovered["reasoning_effort"]
+        configure_dspy(client)
+        print(
+            f"  \u2192 reasoning_effort={discovered['reasoning_effort']!r}, "
+            f"supports={discovered.get('supports_reasoning_effort')!r}"
+        )
+
+
 def _run_with_overrides(prompt: str, *, cf: AgentResult | None, overrides: dict[str, Any]) -> AgentResult:
     """Run a task, applying any LM overrides only for the duration of this call."""
+    _ensure_model_settings_discovered()
     nb = get_notebook_config()
     common: dict[str, Any] = {
         "continue_from": cf,

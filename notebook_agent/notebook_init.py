@@ -68,6 +68,7 @@ class NotebookConfig:
     max_autonomous_turns: int = 6
     runs_root: str = "runs"
     skill_dirs: list[str] = field(default_factory=list)
+    sessions_root: str = "sessions"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -99,6 +100,8 @@ def init_notebook(
     max_autonomous_turns: int = 6,
     runs_root: str | Path = "runs",
     skill_dirs: list[str | Path] | None = None,
+    sessions_root: str | Path = "sessions",
+    use_cached_settings: bool = True,
 ) -> LiteLLMClient:
     """Apply notebook parameters → configure DSPy → stash notebook config.
 
@@ -106,6 +109,12 @@ def init_notebook(
     (see :class:`LiteLLMClient`). Returns the configured
     :class:`LiteLLMClient` so the cell renders something useful when the
     notebook is read by a human.
+
+    When ``use_cached_settings`` is true (the default) and a
+    ``sessions/<model-slug>/model_settings.ipynb`` exists for the resolved
+    model, that notebook's parameters cell overrides the client fields
+    that the user did **not** explicitly pass. This is how the agent's
+    R→C→T→G discovery loop feeds back into future runs.
     """
     global _NB_CONFIG
 
@@ -119,6 +128,18 @@ def init_notebook(
         request_timeout=request_timeout,
         **({} if reasoning_effort is ... else {"reasoning_effort": reasoning_effort}),
     )
+
+    # Apply cached per-model settings (from the discovery skill) for any
+    # field the caller didn't pin explicitly. Only ``reasoning_effort`` is
+    # treated as cache-derived here; max_tokens / temperature stay under
+    # the caller's / env's control.
+    if use_cached_settings and reasoning_effort is ...:
+        from .model_settings import read_settings, settings_notebook_path
+
+        _cached = read_settings(settings_notebook_path(client.model, sessions_root))
+        if "reasoning_effort" in _cached:
+            client.reasoning_effort = _cached["reasoning_effort"]
+
     configure_dspy(client)
 
     _NB_CONFIG = NotebookConfig(
@@ -126,6 +147,7 @@ def init_notebook(
         max_autonomous_turns=int(max_autonomous_turns),
         runs_root=str(runs_root),
         skill_dirs=[str(p) for p in (skill_dirs or [])],
+        sessions_root=str(sessions_root),
     )
     return client
 
@@ -165,9 +187,9 @@ def notebook_parameters() -> list[dict[str, Any]]:
         {
             "name": "reasoning_effort",
             "type": "str",
-            "default": "low",
-            "choices": ["low", "medium", "high", None],
-            "description": "Cap on thinking-model reasoning tokens. 'low' avoids 10k-token scratchpad loops.",
+            "default": None,
+            "choices": [None, "off", "on", "low", "medium", "high"],
+            "description": "Reasoning budget. Value space is model-specific: Gemma=on/off, OpenAI=low/medium/high, many local models ignore. Discovered per-model via R→C→T→G.",
         },
         {
             "name": "max_autonomous_turns",

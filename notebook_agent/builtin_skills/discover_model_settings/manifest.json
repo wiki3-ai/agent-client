@@ -1,0 +1,29 @@
+{
+  "skill_id": "core.discover_model_settings",
+  "name": "Discover Model Settings",
+  "version": "0.1.0",
+  "entrypoint": "skill.ipynb",
+  "description": "Probe the configured LM provider to discover the value space for reasoning_effort (and recommend the lowest-reasoning value that the model actually honors). Writes the winning settings to sessions/<model-slug>/model_settings.ipynb as a Papermill-parameterized notebook. Used by the agent's RCTG bootstrap to learn per-model configuration the first time a new model is seen.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "target_model": {"type": "string", "description": "Model id to probe (e.g. 'google/gemma-4-31b'). Defaults to the currently-loaded model on the provider."},
+      "base_url": {"type": "string"},
+      "candidates": {"type": "array", "items": {"type": ["string", "null"]}},
+      "canary_prompt": {"type": "string"},
+      "per_request_timeout": {"type": "number"}
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "model": {"type": "string"},
+      "reasoning_effort": {"type": ["string", "null"]},
+      "supports_reasoning_effort": {"type": "boolean"},
+      "settings_path": {"type": "string"},
+      "probes": {"type": "array"}
+    },
+    "required": ["model", "reasoning_effort", "settings_path", "probes"]
+  },
+  "tags": ["core", "bootstrap", "model-config", "rctg"]
+}

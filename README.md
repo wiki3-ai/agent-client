@@ -293,6 +293,17 @@ Everything a user needs lives at the package top level:
   LiteLLM's `mock_response` kwarg) so tests and offline workflows stay
   deterministic. LM Studio is the default real backend
   (`NOTEBOOK_AGENT_BASE_URL`, default `http://host.docker.internal:1234/v1`).
+- **`model_settings`** + the bundled `core.discover_model_settings` skill
+  implement the R→C→T→G **bootstrap loop**: the first time a notebook
+  hits `%task` against a new model, the agent runs the discovery skill
+  notebook against `/v1/chat/completions`, probes `reasoning_effort`
+  candidates (`None`, `off`, `low`, `medium`, `high`) with a hard
+  per-request timeout, and writes the winner to
+  `sessions/<model-slug>/model_settings.ipynb`. Subsequent runs (and
+  `init_notebook(use_cached_settings=True)`) read that notebook back as
+  cached per-model defaults. Value space is intentionally model-specific:
+  Gemma understands `on`/`off`, OpenAI uses `low`/`medium`/`high`, many
+  local models ignore the field entirely — discovery learns which.
 - **`dspy_modules`** are stubs (`TaskRouter`, `SkillRetriever`,
   `SkillToNotebookTransformer`, `NotebookRepairer`, `ResultSynthesizer`,
   `ParameterExtractor`) ready to be replaced by DSPy programs.

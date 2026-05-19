@@ -53,12 +53,25 @@ def build_dspy_lm(client: LiteLLMClient, *, fake_answers: list[dict[str, Any]] |
         # so a hung provider surfaces as `lm_call_failed` instead of an
         # 80-minute silent stall.
         timeout=client.request_timeout,
+        # dspy.LM defaults to 8 silent retries on failure. With a hung
+        # thinking model that disconnects after the server's own timeout,
+        # this looks like "the agent is stuck repeating the exact same
+        # error forever". Fail fast — the agent loop can decide whether
+        # to repair or surface to the user.
+        num_retries=0,
         cache=False,
     )
     if client.reasoning_effort is not None:
         # Cap thinking-model reasoning. Without this, models like Gemma-3
         # burn 10k+ tokens looping on intermediate scratchpad.
+        #
+        # LiteLLM gatekeeps ``reasoning_effort`` per-provider and refuses to
+        # forward it for ``lm_studio/*`` even though LM Studio happily
+        # accepts it (it's the same OpenAI-compatible chat-completions
+        # field). ``allowed_openai_params`` overrides that gate; we scope it
+        # narrowly to just this one field.
         kwargs["reasoning_effort"] = client.reasoning_effort
+        kwargs["allowed_openai_params"] = ["reasoning_effort"]
     return dspy.LM(**kwargs)
 
 
