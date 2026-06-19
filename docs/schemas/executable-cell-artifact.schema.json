@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "FormalizationLevel": {
+      "enum": [
+        "free_text",
+        "executable",
+        "checkable",
+        "certified"
+      ],
+      "title": "FormalizationLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "notebook_path": {
+      "title": "Notebook Path",
+      "type": "string"
+    },
+    "cell_id": {
+      "title": "Cell Id",
+      "type": "string"
+    },
+    "kernel_name": {
+      "title": "Kernel Name",
+      "type": "string"
+    },
+    "language": {
+      "title": "Language",
+      "type": "string"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "normalized_source": {
+      "title": "Normalized Source",
+      "type": "string"
+    },
+    "formalization_level": {
+      "$ref": "#/$defs/FormalizationLevel",
+      "default": "executable"
+    },
+    "input_bindings": {
+      "additionalProperties": true,
+      "title": "Input Bindings",
+      "type": "object"
+    },
+    "output_contract": {
+      "additionalProperties": true,
+      "title": "Output Contract",
+      "type": "object"
+    },
+    "side_effects": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Side Effects",
+      "type": "array"
+    },
+    "semantic_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Semantic Refs",
+      "type": "array"
+    },
+    "provenance_event_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Provenance Event Ids",
+      "type": "array"
+    },
+    "content_hash": {
+      "title": "Content Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "task_id",
+    "notebook_path",
+    "cell_id",
+    "kernel_name",
+    "language",
+    "source",
+    "normalized_source",
+    "content_hash"
+  ],
+  "title": "ExecutableCellArtifact",
+  "type": "object"
+}

@@ -1,0 +1,226 @@
+{
+  "$defs": {
+    "Budget": {
+      "additionalProperties": false,
+      "description": "Consumable budget for a task.\n\nAll fields are non-negative integers. ``llm_usd_micro`` is USD * 1e6 to\navoid floating-point accounting drift.",
+      "properties": {
+        "wall_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Wall Ms",
+          "type": "integer"
+        },
+        "cpu_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cpu Ms",
+          "type": "integer"
+        },
+        "llm_usd_micro": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Usd Micro",
+          "type": "integer"
+        },
+        "llm_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Input Tokens",
+          "type": "integer"
+        },
+        "llm_output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Output Tokens",
+          "type": "integer"
+        },
+        "bytes_written": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bytes Written",
+          "type": "integer"
+        },
+        "spawn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Spawn Count",
+          "type": "integer"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "draft",
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable task descriptor + current ledger state.\n\nThis object is the row-level state record for a task. Status transitions\nand budget updates are produced by the scheduler from typed events; the\nstate store persists snapshots of this model atomically.",
+  "properties": {
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "notebook_path": {
+      "title": "Notebook Path",
+      "type": "string"
+    },
+    "kernel_name": {
+      "title": "Kernel Name",
+      "type": "string"
+    },
+    "policy_profile": {
+      "default": "local-dev",
+      "title": "Policy Profile",
+      "type": "string"
+    },
+    "template_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Template Name"
+    },
+    "parent_task_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Task Id"
+    },
+    "spawn_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Spawn Index"
+    },
+    "decision_event_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision Event Id"
+    },
+    "depth": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Depth",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/TaskStatus",
+      "default": "draft"
+    },
+    "reserved_budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "spent_budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "child_task_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Child Task Ids",
+      "type": "array"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    },
+    "executed_notebook_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Executed Notebook Path"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    }
+  },
+  "required": [
+    "task_id",
+    "notebook_path",
+    "kernel_name"
+  ],
+  "title": "TaskSpec",
+  "type": "object"
+}

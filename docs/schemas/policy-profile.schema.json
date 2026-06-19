@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "Budget": {
+      "additionalProperties": false,
+      "description": "Consumable budget for a task.\n\nAll fields are non-negative integers. ``llm_usd_micro`` is USD * 1e6 to\navoid floating-point accounting drift.",
+      "properties": {
+        "wall_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Wall Ms",
+          "type": "integer"
+        },
+        "cpu_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cpu Ms",
+          "type": "integer"
+        },
+        "llm_usd_micro": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Usd Micro",
+          "type": "integer"
+        },
+        "llm_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Input Tokens",
+          "type": "integer"
+        },
+        "llm_output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Llm Output Tokens",
+          "type": "integer"
+        },
+        "bytes_written": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bytes Written",
+          "type": "integer"
+        },
+        "spawn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Spawn Count",
+          "type": "integer"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "Permissions": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_network": {
+          "default": false,
+          "title": "Allow Network",
+          "type": "boolean"
+        },
+        "allow_write": {
+          "default": "workspace",
+          "title": "Allow Write",
+          "type": "string"
+        },
+        "allow_shell": {
+          "default": false,
+          "title": "Allow Shell",
+          "type": "boolean"
+        }
+      },
+      "title": "Permissions",
+      "type": "object"
+    },
+    "ReservationPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "spawn_wall_ms_default": {
+          "default": 300000,
+          "minimum": 0,
+          "title": "Spawn Wall Ms Default",
+          "type": "integer"
+        },
+        "spawn_llm_usd_micro_default": {
+          "default": 250000,
+          "minimum": 0,
+          "title": "Spawn Llm Usd Micro Default",
+          "type": "integer"
+        },
+        "parent_reserve_floor_ratio": {
+          "default": 0.15,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Parent Reserve Floor Ratio",
+          "type": "number"
+        }
+      },
+      "title": "ReservationPolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Named, parameterized profile that defines budgets, quotas, and permissions.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "max_spawn_depth": {
+      "default": 3,
+      "minimum": 0,
+      "title": "Max Spawn Depth",
+      "type": "integer"
+    },
+    "max_children_per_task": {
+      "default": 6,
+      "minimum": 0,
+      "title": "Max Children Per Task",
+      "type": "integer"
+    },
+    "kernel_slots_total": {
+      "default": 4,
+      "minimum": 1,
+      "title": "Kernel Slots Total",
+      "type": "integer"
+    },
+    "queue_limit": {
+      "default": 64,
+      "minimum": 1,
+      "title": "Queue Limit",
+      "type": "integer"
+    },
+    "reservation_policy": {
+      "$ref": "#/$defs/ReservationPolicy"
+    },
+    "budgets": {
+      "$ref": "#/$defs/Budget"
+    },
+    "permissions": {
+      "$ref": "#/$defs/Permissions"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "PolicyProfile",
+  "type": "object"
+}
